@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <!-- Bidirectional arrow for both overriding and being overridden (Light Theme) -->
+  <g fill="#007ACC">
+    <!-- Up arrow -->
+    <path d="M5 2 L2 6 L4 6 L4 10 L6 10 L6 6 L8 6 Z" />
+  </g>
+  <g fill="#B26B00">
+    <!-- Down arrow -->
+    <path d="M11 14 L8 10 L10 10 L10 6 L12 6 L12 10 L14 10 Z" />
+  </g>
+</svg>

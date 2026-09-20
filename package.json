@@ -1,0 +1,214 @@
+{
+  "name": "xf-omninav",
+  "displayName": "XF OmniNav",
+  "description": "PyCharm-style silky-smooth omni symbol navigation, class & method inheritance hierarchy, gutter markers & 1-click CodeLens.",
+  "version": "1.0.3",
+  "publisher": "xf",
+  "icon": "resources/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xf/xf-omninav"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "navigation",
+    "inheritance",
+    "pycharm",
+    "override",
+    "gutter",
+    "hierarchy",
+    "omninav",
+    "omnijump",
+    "omnitree",
+    "python",
+    "vim-friendly"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished",
+    "onLanguage:python",
+    "onLanguage:typescript",
+    "onLanguage:javascript",
+    "onLanguage:typescriptreact",
+    "onLanguage:javascriptreact",
+    "onLanguage:rust",
+    "onLanguage:cpp",
+    "onLanguage:c",
+    "onLanguage:java",
+    "onLanguage:csharp",
+    "onLanguage:go",
+    "onLanguage:php"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "xfOmniNav.navigate",
+        "title": "XF OmniNav: Go to Symbol Definition / Implementation (PyCharm Style)",
+        "category": "XF OmniNav"
+      },
+      {
+        "command": "xfOmniNav.navigateBack",
+        "title": "XF OmniNav: Navigate Back",
+        "category": "XF OmniNav"
+      },
+      {
+        "command": "xfOmniNav.jumpToParent",
+        "title": "Jump to Super Class / Method (XF OmniNav)",
+        "category": "XF OmniNav"
+      },
+      {
+        "command": "xfOmniNav.jumpToChild",
+        "title": "Jump to Sub Class / Method (XF OmniNav)",
+        "category": "XF OmniNav"
+      },
+      {
+        "command": "xfOmniNav.rebuildIndex",
+        "title": "XF OmniNav: Rebuild Symbol Index",
+        "category": "XF OmniNav"
+      },
+      {
+        "command": "xfOmniNav.refresh",
+        "title": "Refresh All Markers & Index",
+        "category": "XF OmniNav"
+      },
+      {
+        "command": "xfOmniNav.toggleGutterPosition",
+        "title": "Switch Arrow Position (Inline / Gutter / Off)",
+        "category": "XF OmniNav"
+      },
+      {
+        "command": "xfOmniNav.jumpToLocation",
+        "title": "XF OmniNav: Jump to Location"
+      },
+      {
+        "command": "xfOmniNav.showTargetsQuickPick",
+        "title": "XF OmniNav: Show Navigation Targets"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "xfOmniNav.navigate",
+          "group": "navigation@1",
+          "when": "editorTextFocus"
+        },
+        {
+          "command": "xfOmniNav.jumpToParent",
+          "group": "navigation@2",
+          "when": "editorTextFocus"
+        },
+        {
+          "command": "xfOmniNav.jumpToChild",
+          "group": "navigation@3",
+          "when": "editorTextFocus"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "xfOmniNav.navigate",
+        "key": "ctrl+alt+b",
+        "mac": "cmd+alt+b",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "xfOmniNav.navigate",
+        "key": "alt+d",
+        "mac": "alt+d",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "xfOmniNav.jumpToParent",
+        "key": "ctrl+u",
+        "mac": "cmd+u",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "xfOmniNav.navigateBack",
+        "key": "alt+left",
+        "mac": "cmd+[",
+        "when": "editorTextFocus"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "XF OmniNav",
+      "properties": {
+        "xfOmniNav.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable or disable XF OmniNav navigation suite."
+        },
+        "xfOmniNav.enableCodeLens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show 1-click clickable CodeLens (e.g. ⬆ Animal.speak) above classes and methods."
+        },
+        "xfOmniNav.enableGutterIcons": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show visual arrow indicators on classes and methods."
+        },
+        "xfOmniNav.gutterPosition": {
+          "type": "string",
+          "enum": [
+            "inline",
+            "glyphMargin"
+          ],
+          "default": "inline",
+          "description": "Position of arrow indicators: 'inline' renders right next to code (leaves breakpoint margin clean), 'glyphMargin' renders in the leftmost margin."
+        },
+        "xfOmniNav.fallbackOnLspFailure": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically fallback to AST & workspace symbol engine when LSP returns no definition."
+        },
+        "xfOmniNav.indexVirtualEnv": {
+          "type": "boolean",
+          "default": true,
+          "description": "Index or resolve symbols inside active virtual environment (.venv, venv, conda, site-packages)."
+        },
+        "xfOmniNav.supportFileImports": {
+          "type": "boolean",
+          "default": true,
+          "description": "Support direct jumping to imported module files and string file paths."
+        },
+        "xfOmniNav.showStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show symbol count and inheritance statistics in status bar."
+        },
+        "xfOmniNav.debounceDelay": {
+          "type": "number",
+          "default": 150,
+          "description": "Debounce delay (ms) for document edits and re-analysis."
+        },
+        "xfOmniNav.maxSymbolsPerFile": {
+          "type": "number",
+          "default": 300,
+          "description": "Maximum number of symbols to analyze in a single file."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "node esbuild.js --production",
+    "watch": "node esbuild.js --watch",
+    "lint": "tsc --noEmit",
+    "test": "node test/run-test.js",
+    "package": "npx @vscode/vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.24",
+    "@types/vscode": "^1.75.0",
+    "esbuild": "^0.20.1",
+    "typescript": "^5.3.3"
+  }
+}
