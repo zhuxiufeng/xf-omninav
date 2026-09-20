@@ -32,7 +32,7 @@ export class InheritanceInlayHintsProvider implements vscode.InlayHintsProvider 
     range: vscode.Range,
     _token: vscode.CancellationToken
   ): vscode.InlayHint[] {
-    if (!getTreeConfig<boolean>('enable', true) || !getTreeConfig<boolean>('enableInlayHints', true)) {
+    if (!getTreeConfig<boolean>('enable', true) || !getTreeConfig<boolean>('enableInlayHints', false)) {
       return [];
     }
 
@@ -65,13 +65,13 @@ export class InheritanceInlayHintsProvider implements vscode.InlayHintsProvider 
         if (marker.parents.length === 1) {
           part.command = {
             title: 'Jump to Super',
-            command: 'xfOmniTree.jumpToLocation',
+            command: 'xfOmniNav.jumpToLocation',
             arguments: [parent],
           };
         } else {
           part.command = {
             title: 'Select Super',
-            command: 'xfOmniTree.showTargetsQuickPick',
+            command: 'xfOmniNav.showTargetsQuickPick',
             arguments: [marker.parents, `Select super declaration for ${marker.symbolName}`],
           };
         }
@@ -94,13 +94,13 @@ export class InheritanceInlayHintsProvider implements vscode.InlayHintsProvider 
         if (marker.children.length === 1) {
           part.command = {
             title: 'Jump to Sub',
-            command: 'xfOmniTree.jumpToLocation',
+            command: 'xfOmniNav.jumpToLocation',
             arguments: [child],
           };
         } else {
           part.command = {
             title: 'Select Sub',
-            command: 'xfOmniTree.showTargetsQuickPick',
+            command: 'xfOmniNav.showTargetsQuickPick',
             arguments: [marker.children, `Select subclass/override for ${marker.symbolName}`],
           };
         }

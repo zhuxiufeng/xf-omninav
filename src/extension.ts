@@ -233,6 +233,7 @@ export function activate(context: vscode.ExtensionContext) {
   // 5. Analysis Pipeline
   const cancellationTokens = new Map<string, vscode.CancellationTokenSource>();
   const analyzedDocVersions = new Map<string, number>();
+  const retriedDocs = new Set<string>();
 
   async function triggerAnalysis(
     editor: vscode.TextEditor,
@@ -246,6 +247,8 @@ export function activate(context: vscode.ExtensionContext) {
       const existing = decorator.getMarkers(document.uri);
       if (existing.length > 0) {
         decorator.applyDecorations(editor, existing);
+        codeLensProvider.updateMarkers(document.uri, existing);
+        inlayHintsProvider.updateMarkers(document.uri, existing);
       }
       return;
     }
@@ -283,6 +286,15 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
 
+      // Safeguard against transient 0-marker results wiping out valid existing markers
+      const existing = decorator.getMarkers(document.uri);
+      if (markers.length === 0 && existing.length > 0 && document.lineCount > 5) {
+        outputChannel.appendLine(
+          `[XF OmniNav] ${document.fileName}: 0 markers returned; preserving ${existing.length} existing markers.`
+        );
+        return;
+      }
+
       analyzedDocVersions.set(uriStr, document.version);
       codeLensProvider.updateMarkers(document.uri, markers);
       inlayHintsProvider.updateMarkers(document.uri, markers);
@@ -298,6 +310,19 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.activeTextEditor.document.uri.toString() === uriStr
       ) {
         updateInheritanceStatusBar(vscode.window.activeTextEditor);
+      }
+
+      // If this was an initial load and 0 markers were found, schedule retry in 1.5s
+      if (_isInitialLoad && markers.length === 0 && !retriedDocs.has(uriStr) && document.lineCount > 5) {
+        retriedDocs.add(uriStr);
+        setTimeout(() => {
+          for (const visEditor of vscode.window.visibleTextEditors) {
+            if (visEditor.document.uri.toString() === uriStr) {
+              triggerAnalysis(visEditor, true, false);
+              break;
+            }
+          }
+        }, 1500);
       }
     } catch (err) {
       outputChannel.appendLine(`[Analysis Error] ${String(err)}`);
@@ -360,6 +385,14 @@ export function activate(context: vscode.ExtensionContext) {
           debouncedAnalysis(editor);
         }
       }
+    }),
+
+    vscode.workspace.onDidCloseTextDocument((document) => {
+      const uriStr = document.uri.toString();
+      analyzedDocVersions.delete(uriStr);
+      retriedDocs.delete(uriStr);
+      codeLensProvider.clear(document.uri);
+      inlayHintsProvider.clear(document.uri);
     }),
 
     vscode.workspace.onDidChangeConfiguration((e) => {

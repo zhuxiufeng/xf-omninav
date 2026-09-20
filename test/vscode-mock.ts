@@ -58,6 +58,10 @@ export class Location {
   constructor(public uri: Uri, public range: Range | Position) {}
 }
 
+export class CodeLens {
+  constructor(public range: Range, public command?: any) {}
+}
+
 export class Uri {
   public scheme: string = 'file';
   constructor(public fsPath: string) {

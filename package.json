@@ -2,7 +2,7 @@
   "name": "xf-omninav",
   "displayName": "XF OmniNav",
   "description": "PyCharm-style silky-smooth omni symbol navigation, class & method inheritance hierarchy, gutter markers & 1-click CodeLens.",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "publisher": "Vivian",
   "icon": "resources/icon.png",
   "repository": {
@@ -152,8 +152,13 @@
         },
         "xfOmniNav.enableGutterIcons": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "Show visual arrow indicators on classes and methods."
+        },
+        "xfOmniNav.enableInlayHints": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show clickable InlayHints at the end of declaration lines (disabled by default to prevent duplicate arrows)."
         },
         "xfOmniNav.gutterPosition": {
           "type": "string",

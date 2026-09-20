@@ -63,7 +63,7 @@ export class InheritanceCodeLensProvider implements vscode.CodeLensProvider {
             new vscode.CodeLens(lineRange, {
               title: `⬆ ${parent.name || 'Super'}`,
               tooltip: `Jump to ${parent.description || parent.name}`,
-              command: 'xfOmniTree.jumpToLocation',
+              command: 'xfOmniNav.jumpToLocation',
               arguments: [parent],
             })
           );
@@ -72,7 +72,7 @@ export class InheritanceCodeLensProvider implements vscode.CodeLensProvider {
             new vscode.CodeLens(lineRange, {
               title: `⬆ Supers (${marker.parents.length})`,
               tooltip: 'Click to select superclass / method to jump to',
-              command: 'xfOmniTree.showTargetsQuickPick',
+              command: 'xfOmniNav.showTargetsQuickPick',
               arguments: [marker.parents, `Select superclass / method for ${marker.symbolName}`],
             })
           );
@@ -87,7 +87,7 @@ export class InheritanceCodeLensProvider implements vscode.CodeLensProvider {
             new vscode.CodeLens(lineRange, {
               title: `⬇ ${child.name || 'Sub'}`,
               tooltip: `Jump to ${child.description || child.name}`,
-              command: 'xfOmniTree.jumpToLocation',
+              command: 'xfOmniNav.jumpToLocation',
               arguments: [child],
             })
           );
@@ -101,7 +101,7 @@ export class InheritanceCodeLensProvider implements vscode.CodeLensProvider {
             new vscode.CodeLens(lineRange, {
               title: `⬇ ${names}${more} (${marker.children.length})`,
               tooltip: 'Click to select subclass / overriding method to jump to',
-              command: 'xfOmniTree.showTargetsQuickPick',
+              command: 'xfOmniNav.showTargetsQuickPick',
               arguments: [
                 marker.children,
                 `Select subclass / implementation for ${marker.symbolName}`,

@@ -271,7 +271,7 @@ export class InheritanceDecorator implements vscode.Disposable {
     for (const target of targets) {
       const locLabel = formatLocationLabel(target.uri, target.range.startLine);
       const displayName = target.name || locLabel;
-      const commandUri = createCommandUri('xfOmniTree.jumpToLocation', target);
+      const commandUri = createCommandUri('xfOmniNav.jumpToLocation', target);
 
       md.appendMarkdown(`* [${displayName} \`(${locLabel})\`](${commandUri})`);
       if (target.description) {
