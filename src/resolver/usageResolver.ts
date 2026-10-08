@@ -133,11 +133,17 @@ export class UsageResolver {
       isClassUnique,
     };
 
-    // Track known definitions from indexer to never mistake definition lines for calls
+    // Track known function/method/class definitions from indexer to never mistake definition lines for calls.
+    // NOTE: Do not exclude 'property' or 'variable' because reassignments (e.g. self.callback = lambda ...) are valid usages!
     if (indexer && typeof indexer.findExact === 'function') {
       const exactDefs = indexer.findExact(symbolName);
       for (const d of exactDefs) {
-        if (d && d.uri && d.range) {
+        if (
+          d &&
+          d.uri &&
+          d.range &&
+          (d.kind === 'function' || d.kind === 'method' || d.kind === 'class')
+        ) {
           defKeys.add(`${d.uri.toString()}:${d.range.start.line}`);
         }
       }

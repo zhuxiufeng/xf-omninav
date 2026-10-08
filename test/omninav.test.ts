@@ -435,6 +435,55 @@ def handle_box():
     assert.strictEqual(usages.some(u => u.text.includes('self.error')), false, 'self.error MUST be excluded');
     assert.strictEqual(usages.some(u => u.range.start.line === 4 && u.uri.toString() === boxSaveDoc.uri.toString()), false, 'super().__init__ in self class MUST be excluded');
   });
+
+  it('should find all assignments and reads when clicking an attribute assignment without filtering reassignments', async () => {
+    const { UsageResolver } = await import('../src/resolver/usageResolver');
+    const code = `
+class NanoWrapper:
+    def __init__(self):
+        self.replace_nozzle_gear_shifting_callback = None
+        self.counter = 0
+
+    def setup_callbacks(self, tnn, before_tnn):
+        self.replace_nozzle_gear_shifting_callback = lambda et: self.set_mode(tnn=tnn, before_tnn=before_tnn)
+
+    def reset_callbacks(self):
+        self.replace_nozzle_gear_shifting_callback = None
+
+    def trigger(self):
+        if self.replace_nozzle_gear_shifting_callback is not None:
+            self.replace_nozzle_gear_shifting_callback(True)
+`;
+    const docUri = Uri.file('/test/box_nano_wrapper.py');
+    const doc = new MockTextDocument(code, 'file:///test/box_nano_wrapper.py', 'python');
+
+    const indexer = new SymbolIndexer();
+    indexer.indexFile(docUri as any, code);
+
+    workspace.textDocuments.push(doc);
+
+    // Click on self.replace_nozzle_gear_shifting_callback at line 3: "        self.replace_nozzle_gear_shifting_callback = None"
+    const clickPos = new Position(3, 15);
+    const usages = await UsageResolver.findUsages(
+      doc as any,
+      clickPos,
+      'replace_nozzle_gear_shifting_callback',
+      indexer
+    );
+
+    // Verify all other occurrences are present:
+    // Line 7: lambda assignment
+    // Line 10: reset to None
+    // Line 13: if check
+    // Line 14: invocation
+    // Line 3 (the clicked line) must be excluded
+    assert.strictEqual(usages.some(u => u.range.start.line === 3), false, 'Current clicked line must be excluded');
+    assert.strictEqual(usages.some(u => u.range.start.line === 7), true, 'Lambda reassignment at line 7 must be found');
+    assert.strictEqual(usages.some(u => u.range.start.line === 10), true, 'Reset assignment at line 10 must be found');
+    assert.strictEqual(usages.some(u => u.range.start.line === 13), true, 'If condition check at line 13 must be found');
+    assert.strictEqual(usages.some(u => u.range.start.line === 14), true, 'Callback invocation at line 14 must be found');
+    assert.strictEqual(usages.length, 4, 'Must return exactly all 4 other usages');
+  });
 });
 
 describe('Optimization & Raw I/O tests', () => {
