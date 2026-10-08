@@ -369,6 +369,9 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.workspace.onDidChangeTextDocument((event) => {
       const uriStr = event.document.uri.toString();
       analyzedDocVersions.delete(uriStr);
+      analyzer.clearFileCache(uriStr);
+      // Synchronously index the edited document so subsequent jump/definition uses fresh lines!
+      indexer.indexDocument(event.document);
       const editor = vscode.window.activeTextEditor;
       if (editor && editor.document.uri.toString() === uriStr) {
         debouncedAnalysis(editor);
@@ -377,6 +380,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     vscode.workspace.onDidSaveTextDocument((document) => {
       const uriStr = document.uri.toString();
+      analyzer.clearFileCache(uriStr);
       analyzer.clearCandidateCache();
       indexer.indexDocument(document);
 

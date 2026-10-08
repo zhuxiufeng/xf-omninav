@@ -188,6 +188,18 @@ export class InheritanceAnalyzer {
     this.subclassCandidateCache.clear();
   }
 
+  public clearFileCache(uri: vscode.Uri | string): void {
+    const uriStr = typeof uri === 'string' ? uri : uri.toString();
+    this.documentSymbolCache.delete(uriStr);
+
+    // Remove any classes belonging to this file from globalClassCache
+    for (const key of Array.from(this.globalClassCache.keys())) {
+      if (key.startsWith(`${uriStr}#`)) {
+        this.globalClassCache.delete(key);
+      }
+    }
+  }
+
   /**
    * Silently loads document content without firing VS Code's onDidOpenTextDocument event.
    * If the document is already open in editor tabs, reuses it to reflect unsaved typing.
@@ -272,18 +284,27 @@ export class InheritanceAnalyzer {
       return [];
     }
 
-    // 2. Merge previously discovered relationships from global cache for classes in this doc
+    // 2. Merge previously discovered relationships from global cache for classes in this doc.
+    // NOTE: Keep the current cls and method ranges (fresh from latest document AST)!
+    // Only restore the external references (parentClasses, childClasses, parentMethods, childMethods),
+    // and if a target refers to another symbol in the same document, do not keep stale line numbers.
     for (const cls of classMap.values()) {
       const globalKey = `${document.uri.toString()}#${cls.name}`;
       const cached = this.globalClassCache.get(globalKey);
       if (cached) {
-        cls.parentClasses.push(...cached.parentClasses);
-        cls.childClasses.push(...cached.childClasses);
+        // Only keep targets from OTHER documents, or targets that will be re-resolved
+        const extParents = cached.parentClasses.filter((p) => p.uri !== document.uri.toString());
+        const extChildren = cached.childClasses.filter((c) => c.uri !== document.uri.toString());
+        cls.parentClasses.push(...extParents);
+        cls.childClasses.push(...extChildren);
+
         for (const [mName, m] of cls.methods.entries()) {
           const cachedM = cached.methods.get(mName);
           if (cachedM) {
-            m.parentMethods.push(...cachedM.parentMethods);
-            m.childMethods.push(...cachedM.childMethods);
+            const extParentMethods = cachedM.parentMethods.filter((pm) => pm.uri !== document.uri.toString());
+            const extChildMethods = cachedM.childMethods.filter((cm) => cm.uri !== document.uri.toString());
+            m.parentMethods.push(...extParentMethods);
+            m.childMethods.push(...extChildMethods);
           }
         }
       }

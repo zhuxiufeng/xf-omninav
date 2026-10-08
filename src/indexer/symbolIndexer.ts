@@ -443,21 +443,17 @@ export class SymbolIndexer implements vscode.Disposable {
       })
     );
 
-    // 2. On document edit: debounce re-index (300ms)
+    // 2. On document edit: re-index immediately so any immediate jump or definition request has 100% accurate lines
     this.disposables.push(
       vscode.workspace.onDidChangeTextDocument((e) => {
         const uriStr = e.document.uri.toString();
         const existingTimer = this.pendingChanges.get(uriStr);
         if (existingTimer) {
           clearTimeout(existingTimer);
+          this.pendingChanges.delete(uriStr);
         }
 
-        const timer = setTimeout(() => {
-          this.pendingChanges.delete(uriStr);
-          this.indexDocument(e.document);
-        }, 300);
-
-        this.pendingChanges.set(uriStr, timer);
+        this.indexDocument(e.document);
       })
     );
 

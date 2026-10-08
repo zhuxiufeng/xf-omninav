@@ -166,7 +166,11 @@ export class NavigateCommand {
             }
           }
 
-          await this.jumpToLocation(targetUri, targetRange.start);
+          const targetPos =
+            'targetSelectionRange' in loc && loc.targetSelectionRange
+              ? loc.targetSelectionRange.start
+              : targetRange.start;
+          await this.jumpToLocation(targetUri, targetPos);
           return;
         } else {
           // Multiple LSP definitions, show them
