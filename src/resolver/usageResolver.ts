@@ -11,6 +11,15 @@ export interface UsageItem {
   relativePath: string;
 }
 
+export interface CallScanContext {
+  enclosingClass?: EnclosingClassInfo;
+  isConstructor?: boolean;
+  targetClassNames?: Set<string>;
+  subClassNames?: Set<string>;
+  parentClassNames?: Set<string>;
+  parentUris?: Set<string>;
+}
+
 export class UsageResolver {
   /**
    * Check if current position is on the definition header of symbolName.
@@ -84,6 +93,32 @@ export class UsageResolver {
       ? this.resolveParentClassInfo(document, enclosingClass, indexer)
       : { parentUris: new Set<string>(), parentClassNames: new Set<string>() };
 
+    const isPython = document.languageId === 'python';
+    const isConstructor = Boolean(
+      enclosingClass &&
+        ((isPython && (symbolName === '__init__' || symbolName === '__new__')) ||
+          symbolName === 'constructor')
+    );
+
+    const subClassNames = new Set<string>();
+    if (enclosingClass) {
+      if (indexer && typeof indexer.getSubClasses === 'function') {
+        const subs = indexer.getSubClasses(enclosingClass.name);
+        for (const s of subs) {
+          subClassNames.add(s.toLowerCase());
+        }
+      }
+    }
+
+    const scanContext: CallScanContext = {
+      enclosingClass: enclosingClass || undefined,
+      isConstructor,
+      targetClassNames: enclosingClass ? new Set([enclosingClass.name]) : undefined,
+      subClassNames,
+      parentClassNames,
+      parentUris,
+    };
+
     // Track known definitions from indexer to never mistake definition lines for calls
     if (indexer && typeof indexer.findExact === 'function') {
       const exactDefs = indexer.findExact(symbolName);
@@ -106,12 +141,20 @@ export class UsageResolver {
       ]);
 
       if (lspRefs && lspRefs.length > 0) {
-        await this.collectLocations(lspRefs, seen, defKeys, results, symbolName, isSubclass ? parentUris : undefined);
+        await this.collectLocations(
+          lspRefs,
+          seen,
+          defKeys,
+          results,
+          symbolName,
+          isSubclass ? parentUris : undefined,
+          scanContext
+        );
       }
     } catch {}
 
     // 2. Fast scan inside current document (instant & 100% resilient)
-    const docResults = this.scanDocumentForCalls(document, symbolName, position.line, defKeys);
+    const docResults = this.scanDocumentForCalls(document, symbolName, position.line, defKeys, scanContext);
     for (const item of docResults) {
       const key = `${item.uri.toString()}:${item.range.start.line}`;
       if (!defKeys.has(key) && !seen.has(key)) {
@@ -123,6 +166,7 @@ export class UsageResolver {
     // 3. Workspace file call search
     const ext = path.extname(document.uri.fsPath);
     let grepSucceeded = false;
+    const searchSymbol = isConstructor && enclosingClass ? enclosingClass.name : symbolName;
 
     // 3.1 Try fast system grep/rg on workspace folder(s) (typically takes <50ms across entire project)
     const workspaceFolders = vscode.workspace.workspaceFolders || [];
@@ -144,7 +188,7 @@ export class UsageResolver {
             const cp = require('child_process');
             cp.execFile(
               'grep',
-              ['-rn', '-l', '-w', `--include=*${ext}`, symbolName, rootPath],
+              ['-rn', '-l', '-w', `--include=*${ext}`, searchSymbol, rootPath],
               { timeout: 3000 },
               (err: any, stdout: string) => {
                 if (err && err.code !== 1) {
@@ -185,7 +229,7 @@ export class UsageResolver {
               } catch {}
               if (!content) continue;
 
-              const fileResults = this.scanTextForCalls(fileUri, content, symbolName, undefined, defKeys);
+              const fileResults = this.scanTextForCalls(fileUri, content, symbolName, undefined, defKeys, scanContext);
               for (const item of fileResults) {
                 const key = `${item.uri.toString()}:${item.range.start.line}`;
                 if (!defKeys.has(key) && !seen.has(key)) {
@@ -232,11 +276,11 @@ export class UsageResolver {
                   content = Buffer.from(raw).toString('utf8');
                 }
 
-                if (!content.includes(symbolName)) {
+                if (!content.includes(searchSymbol)) {
                   return;
                 }
 
-                const fileResults = this.scanTextForCalls(uri, content, symbolName, undefined, defKeys);
+                const fileResults = this.scanTextForCalls(uri, content, symbolName, undefined, defKeys, scanContext);
                 for (const item of fileResults) {
                   const key = `${item.uri.toString()}:${item.range.start.line}`;
                   if (!defKeys.has(key) && !seen.has(key)) {
@@ -262,10 +306,10 @@ export class UsageResolver {
         }
         try {
           const text = openDoc.getText();
-          if (!text.includes(symbolName)) {
+          if (!text.includes(searchSymbol)) {
             continue;
           }
-          const fileResults = this.scanTextForCalls(openDoc.uri, text, symbolName, undefined, defKeys);
+          const fileResults = this.scanTextForCalls(openDoc.uri, text, symbolName, undefined, defKeys, scanContext);
           for (const item of fileResults) {
             const key = `${item.uri.toString()}:${item.range.start.line}`;
             if (!defKeys.has(key) && !seen.has(key)) {
@@ -508,8 +552,13 @@ export class UsageResolver {
     defKeys: Set<string>,
     results: UsageItem[],
     symbolName?: string,
-    excludedParentUris?: Set<string>
+    excludedParentUris?: Set<string>,
+    scanContext?: CallScanContext
   ): Promise<void> {
+    const isConstructor = Boolean(scanContext?.isConstructor && scanContext?.enclosingClass);
+    const targetClass = scanContext?.enclosingClass?.name;
+    const escapedTarget = targetClass ? targetClass.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '';
+
     for (const ref of locations) {
       if (
         excludedParentUris &&
@@ -521,27 +570,53 @@ export class UsageResolver {
       if (defKeys.has(key) || seen.has(key)) {
         continue;
       }
-      seen.add(key);
 
       let lineText = '';
+      let fileContent = '';
       try {
         const openDoc = vscode.workspace.textDocuments?.find(
           (d) => d.uri.toString() === ref.uri.toString()
         );
         if (openDoc) {
           lineText = openDoc.lineAt(ref.range.start.line).text.trim();
+          fileContent = openDoc.getText();
         } else if (ref.uri.scheme === 'file') {
-          const fileContent = await fs.promises.readFile(ref.uri.fsPath, 'utf8');
+          fileContent = await fs.promises.readFile(ref.uri.fsPath, 'utf8');
           const refLines = fileContent.split(/\r?\n/);
           lineText = (refLines[ref.range.start.line] || '').trim();
         }
       } catch {}
 
-      if (symbolName && lineText) {
-        const ext = path.extname(ref.uri.fsPath).toLowerCase();
-        const isPy = ext === '.py' || ext === '.pyi';
-        const state = { inBlockComment: false, inTripleQuote: null as string | null };
-        const code = this.extractCodeFromLine(lineText, isPy, state, ext);
+      if (!lineText) continue;
+
+      const ext = path.extname(ref.uri.fsPath).toLowerCase();
+      const isPy = ext === '.py' || ext === '.pyi';
+      const state = { inBlockComment: false, inTripleQuote: null as string | null };
+      const code = this.extractCodeFromLine(lineText, isPy, state, ext);
+
+      if (isConstructor && targetClass) {
+        // If constructor, must match TargetClass(...) or subclass super().__init__
+        const instantiateRegex = new RegExp(`(?:new\\s+)?\\b${escapedTarget}\\s*\\(`);
+        const explicitInitRegex = new RegExp(`\\b${escapedTarget}\\.__init__\\s*\\(`);
+        const isInstantiate = instantiateRegex.test(code) || explicitInitRegex.test(code);
+
+        // Exclude class definitions and imports
+        if (new RegExp(`^\\s*class\\s+${escapedTarget}\\b`).test(lineText)) continue;
+        if (new RegExp(`^\\s*(?:from\\s+\\S+\\s+import|import)\\s+`).test(lineText)) continue;
+
+        if (!isInstantiate) {
+          // Check if subclass super call
+          const isSubclassSuper =
+            /\bsuper\b.*(?:\.__init__|constructor|\b)/.test(code) &&
+            Boolean(
+              scanContext?.subClassNames &&
+              Array.from(scanContext.subClassNames).some((s) => fileContent.toLowerCase().includes(`class ${s}`))
+            );
+          if (!isSubclassSuper) {
+            continue; // Not a caller of targetClass constructor, discard!
+          }
+        }
+      } else if (symbolName) {
         const escaped = symbolName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const callRegex = new RegExp(`\\b${escaped}\\b`);
         if (!callRegex.test(code)) {
@@ -549,6 +624,7 @@ export class UsageResolver {
         }
       }
 
+      seen.add(key);
       results.push({
         uri: ref.uri,
         range: ref.range,
@@ -678,7 +754,8 @@ export class UsageResolver {
     text: string,
     symbolName: string,
     excludeLine?: number,
-    defKeys?: Set<string>
+    defKeys?: Set<string>,
+    context?: CallScanContext
   ): UsageItem[] {
     const results: UsageItem[] = [];
     const escaped = symbolName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -691,6 +768,36 @@ export class UsageResolver {
 
     const parseState = { inBlockComment: false, inTripleQuote: null as string | null };
 
+    const isConstructor = Boolean(context?.isConstructor && context?.enclosingClass);
+    const targetClassName = context?.enclosingClass?.name;
+    const escapedTargetClass = targetClassName
+      ? targetClassName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      : '';
+
+    // Collect class aliases in this file if constructor matching
+    const localTargetNames = new Set<string>();
+    if (isConstructor && targetClassName) {
+      localTargetNames.add(targetClassName);
+      if (context?.targetClassNames) {
+        for (const t of context.targetClassNames) {
+          localTargetNames.add(t);
+        }
+      }
+      if (isPython) {
+        const aliasRegex = new RegExp(
+          `^\\s*from\\s+\\S+\\s+import\\s+.*?\\b${escapedTargetClass}\\s+as\\s+([A-Za-z0-9_]+)`,
+          'gm'
+        );
+        let m: RegExpExecArray | null;
+        while ((m = aliasRegex.exec(text)) !== null) {
+          if (m[1]) localTargetNames.add(m[1]);
+        }
+      }
+    }
+
+    let currentClassName: string | null = null;
+    let currentClassIndent = 0;
+
     for (let i = 0; i < lines.length; i++) {
       if (excludeLine !== undefined && i === excludeLine) {
         continue;
@@ -701,24 +808,138 @@ export class UsageResolver {
 
       const line = lines[i];
 
-      // Extract code outside comments and docstrings
-      const code = this.extractCodeFromLine(line, isPython, parseState, ext);
-
-      if (!line.includes(symbolName)) {
-        continue;
+      // Track enclosing class within the file
+      if (isPython) {
+        const classHeader = line.match(/^(\s*)class\s+([A-Za-z0-9_]+)(?:\s*\((.*?)\))?\s*:/);
+        if (classHeader) {
+          currentClassIndent = classHeader[1].length;
+          currentClassName = classHeader[2];
+          const basesStr = classHeader[3];
+          if (basesStr && targetClassName) {
+            const bases = basesStr
+              .split(',')
+              .map((b) => b.trim().split('.').pop() || b.trim());
+            if (
+              bases.includes(targetClassName) ||
+              (context?.subClassNames &&
+                bases.some((b) => context.subClassNames!.has(b.toLowerCase())))
+            ) {
+              context?.subClassNames?.add(currentClassName.toLowerCase());
+            }
+          }
+        } else if (currentClassName) {
+          const trimmedLine = line.trim();
+          const indentMatch = line.match(/^(\s*)/);
+          const lineIndent = indentMatch ? indentMatch[1].length : 0;
+          if (
+            trimmedLine &&
+            !trimmedLine.startsWith('#') &&
+            lineIndent <= currentClassIndent
+          ) {
+            currentClassName = null;
+          }
+        }
+      } else {
+        const jsClassHeader = line.match(
+          /^\s*(?:export\s+)?class\s+([A-Za-z0-9_$]+)(?:\s+extends\s+([A-Za-z0-9_$]+))?/
+        );
+        if (jsClassHeader) {
+          currentClassName = jsClassHeader[1];
+          if (jsClassHeader[2] && targetClassName && jsClassHeader[2] === targetClassName) {
+            context?.subClassNames?.add(currentClassName.toLowerCase());
+          }
+        }
       }
 
+      // Extract code outside comments and docstrings
+      const code = this.extractCodeFromLine(line, isPython, parseState, ext);
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) {
         continue;
       }
 
-      // Check if symbolName actually appears in executable code (not inside comments)
+      if (isConstructor && targetClassName) {
+        // === CONSTRUCTOR USAGE RESOLUTION ===
+        // Must find places instantiating targetClassName or calling super().__init__ in subclasses.
+        // Must STRICTLY IGNORE unrelated classes calling __init__ or super().__init__!
+
+        let matched = false;
+
+        // 1. Direct Instantiation: TargetClass(...) or TargetClass.__init__(...) or new TargetClass(...)
+        for (const tName of localTargetNames) {
+          const escTName = tName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const instantiateRegex = new RegExp(`(?:new\\s+)?\\b${escTName}\\s*\\(`);
+          const explicitInitRegex = new RegExp(`\\b${escTName}\\.__init__\\s*\\(`);
+
+          if (instantiateRegex.test(code) || explicitInitRegex.test(code)) {
+            // Exclude class definition line: class TargetClass...
+            if (new RegExp(`^\\s*class\\s+${escTName}\\b`).test(line)) {
+              continue;
+            }
+            // Exclude subclass definition line: class Sub(TargetClass):
+            if (new RegExp(`^\\s*class\\s+[A-Za-z0-9_]+\\s*\\([^)]*\\b${escTName}\\b`).test(line)) {
+              continue;
+            }
+            // Exclude import statements
+            if (new RegExp(`^\\s*(?:from\\s+\\S+\\s+import|import)\\s+`).test(line)) {
+              continue;
+            }
+
+            const match = instantiateRegex.exec(line) || explicitInitRegex.exec(line);
+            if (match) {
+              const startChar = match.index;
+              const endChar = startChar + tName.length;
+              results.push({
+                uri,
+                range: new vscode.Range(i, startChar, i, endChar),
+                text: trimmed,
+                relativePath: relPath,
+              });
+              matched = true;
+              break;
+            }
+          }
+        }
+
+        if (matched) continue;
+
+        // 2. Subclass super().__init__(...) or super(Sub, self).__init__(...)
+        if (
+          currentClassName &&
+          currentClassName.toLowerCase() !== targetClassName.toLowerCase() &&
+          context?.subClassNames?.has(currentClassName.toLowerCase())
+        ) {
+          const superInitRegex = isPython
+            ? /\bsuper\b.*(?:\.__init__|\b)/
+            : /\bsuper\s*\(/;
+          if (superInitRegex.test(code)) {
+            const match = superInitRegex.exec(line);
+            if (match) {
+              results.push({
+                uri,
+                range: new vscode.Range(i, match.index, i, match.index + match[0].length),
+                text: trimmed,
+                relativePath: relPath,
+              });
+            }
+          }
+        }
+
+        // For constructors, all other lines (e.g. OtherClass.__init__ or super() in unrelated classes)
+        // are 100% ignored!
+        continue;
+      }
+
+      // === NORMAL METHOD / SYMBOL USAGE RESOLUTION ===
+      if (!line.includes(symbolName)) {
+        continue;
+      }
+
       if (!callRegex.test(code)) {
         continue;
       }
 
-      // Skip the definition line itself (e.g. def func_name, class Name, fn name)
+      // Skip definition lines
       if (
         new RegExp(`^\\s*(?:async\\s+)?def\\s+${escaped}\\b`).test(line) ||
         new RegExp(`^\\s*class\\s+${escaped}\\b`).test(line) ||
@@ -727,6 +948,44 @@ export class UsageResolver {
         new RegExp(`^\\s*(?:fn|func)\\s+${escaped}\\b`).test(line)
       ) {
         continue;
+      }
+
+      // If symbol is defined in a class, filter out internal calls from UNRELATED classes!
+      if (context?.enclosingClass && targetClassName) {
+        const lowerTarget = targetClassName.toLowerCase();
+        // Check if call is self.symbolName, cls.symbolName, or this.symbolName
+        const selfCallMatch = code.match(new RegExp(`\\b(?:self|cls|this)\\s*\\.\\s*${escaped}\\b`));
+        if (selfCallMatch) {
+          if (currentClassName) {
+            const lowerCur = currentClassName.toLowerCase();
+            const isHierarchy =
+              lowerCur === lowerTarget ||
+              Boolean(context.subClassNames && context.subClassNames.has(lowerCur)) ||
+              Boolean(context.parentClassNames && context.parentClassNames.has(lowerCur));
+            if (!isHierarchy) {
+              // Call is inside an unrelated class! Discard!
+              continue;
+            }
+          }
+        }
+
+        // Check if call is explicitly on another class name, e.g. OtherClass.symbolName(...)
+        const classCallMatch = code.match(new RegExp(`\\b([A-Za-z0-9_]+)\\s*\\.\\s*${escaped}\\b`));
+        if (classCallMatch) {
+          const prefix = classCallMatch[1];
+          if (
+            prefix !== 'self' &&
+            prefix !== 'cls' &&
+            prefix !== 'this' &&
+            prefix !== targetClassName &&
+            /^[A-Z]/.test(prefix) && // PascalCase indicates a class name
+            (!context.subClassNames || !context.subClassNames.has(prefix.toLowerCase())) &&
+            (!context.parentClassNames || !context.parentClassNames.has(prefix.toLowerCase()))
+          ) {
+            // Explicitly calling another class's method! Discard!
+            continue;
+          }
+        }
       }
 
       const match = callRegex.exec(line);
@@ -752,8 +1011,9 @@ export class UsageResolver {
     document: vscode.TextDocument,
     symbolName: string,
     excludeLine?: number,
-    defKeys?: Set<string>
+    defKeys?: Set<string>,
+    context?: CallScanContext
   ): UsageItem[] {
-    return this.scanTextForCalls(document.uri, document.getText(), symbolName, excludeLine, defKeys);
+    return this.scanTextForCalls(document.uri, document.getText(), symbolName, excludeLine, defKeys, context);
   }
 }

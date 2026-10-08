@@ -283,6 +283,76 @@ class BoxState(BoxStateBase):
     assert.strictEqual(results[0].targetUri.toString(), subDoc.uri.toString(), 'Target must be in subclass file, NOT base class file');
     assert.strictEqual(results[0].targetRange.start.line, 5, 'Target must be line 5 (self.state_init() in subclass)');
   });
+
+  it('should resolve __init__ constructor callers to class instantiations and exclude non-target classes', async () => {
+    const { UsageResolver } = await import('../src/resolver/usageResolver');
+    const { SmoothDefinitionProvider } = await import('../src/navigation/definitionProvider');
+    const { SymbolIndexer } = await import('../src/indexer/symbolIndexer');
+    const { MockTextDocument, Uri, Position, workspace } = await import('./vscode-mock');
+
+    const boxActionCode = `
+class BoxAction(BoxActionBase):
+    def __init__(self, config, box_state):
+        super().__init__(config, box_state)
+        self.get_measuring_wheel_list = True
+`;
+
+    const callerCode = `
+from extras.box_wrapper import BoxAction
+
+class BoxManager:
+    def setup(self):
+        self.action = BoxAction(self.config, self.box_state)
+`;
+
+    const unrelatedCode = `
+class Printer:
+    def __init__(self, config):
+        super().__init__(config)
+
+class RetParser:
+    def __init__(self):
+        super().__init__()
+`;
+
+    const subclassCode = `
+from extras.box_wrapper import BoxAction
+
+class BoxActionSub(BoxAction):
+    def __init__(self, config, box_state):
+        super().__init__(config, box_state)
+`;
+
+    const boxUri = Uri.file('/test/box_action.py');
+    const callerUri = Uri.file('/test/box_manager.py');
+    const subUri = Uri.file('/test/box_sub.py');
+    const unrelatedUri = Uri.file('/test/printer.py');
+
+    const indexer = new SymbolIndexer();
+    indexer.indexFile(boxUri as any, boxActionCode);
+    indexer.indexFile(callerUri as any, callerCode);
+    indexer.indexFile(subUri as any, subclassCode);
+    indexer.indexFile(unrelatedUri as any, unrelatedCode);
+
+    const boxDoc = new MockTextDocument(boxActionCode, 'file:///test/box_action.py', 'python');
+    const callerDoc = new MockTextDocument(callerCode, 'file:///test/box_manager.py', 'python');
+    const subDoc = new MockTextDocument(subclassCode, 'file:///test/box_sub.py', 'python');
+    const unrelatedDoc = new MockTextDocument(unrelatedCode, 'file:///test/printer.py', 'python');
+    workspace.textDocuments.push(boxDoc, callerDoc, subDoc, unrelatedDoc);
+
+    // Line 2 in boxActionCode: "    def __init__(self, config, box_state):"
+    const defPos = new Position(2, 9);
+    const atDef = UsageResolver.isAtDefinition(boxDoc as any, defPos, '__init__');
+    assert.strictEqual(atDef, true, 'Must detect __init__ definition');
+
+    // Usages must find self.action = BoxAction(...) and subclass super().__init__(), and NEVER match Printer or RetParser
+    const usages = await UsageResolver.findUsages(boxDoc as any, defPos, '__init__', indexer);
+    assert.strictEqual(usages.length, 2, 'Must ONLY find BoxAction instantiation and subclass super().__init__, strictly zero unrelated classes');
+    assert.ok(usages.some(u => u.uri.toString() === callerDoc.uri.toString() && u.text.includes('BoxAction(')));
+    assert.ok(usages.some(u => u.uri.toString() === subDoc.uri.toString() && u.text.includes('super().__init__')));
+    assert.strictEqual(usages.some(u => u.uri.toString() === unrelatedDoc.uri.toString()), false, 'Unrelated classes MUST NOT be present');
+    assert.strictEqual(usages.some(u => u.uri.toString() === boxDoc.uri.toString()), false, 'Base class own super call MUST NOT be present');
+  });
 });
 
 describe('Optimization & Raw I/O tests', () => {
