@@ -12,12 +12,15 @@ export interface UsageItem {
 }
 
 export interface CallScanContext {
+  sourceUri?: vscode.Uri;
+  sourceModuleName?: string;
   enclosingClass?: EnclosingClassInfo;
   isConstructor?: boolean;
   targetClassNames?: Set<string>;
   subClassNames?: Set<string>;
   parentClassNames?: Set<string>;
   parentUris?: Set<string>;
+  isClassUnique?: boolean;
 }
 
 export class UsageResolver {
@@ -110,13 +113,24 @@ export class UsageResolver {
       }
     }
 
+    const sourceUri = document.uri;
+    const sourceModuleName = path.basename(sourceUri.fsPath, path.extname(sourceUri.fsPath));
+    let isClassUnique = true;
+    if (enclosingClass && indexer && typeof indexer.findExact === 'function') {
+      const classDefs = indexer.findExact(enclosingClass.name).filter((d: any) => d.kind === 'class');
+      isClassUnique = classDefs.length <= 1;
+    }
+
     const scanContext: CallScanContext = {
+      sourceUri,
+      sourceModuleName,
       enclosingClass: enclosingClass || undefined,
       isConstructor,
       targetClassNames: enclosingClass ? new Set([enclosingClass.name]) : undefined,
       subClassNames,
       parentClassNames,
       parentUris,
+      isClassUnique,
     };
 
     // Track known definitions from indexer to never mistake definition lines for calls
@@ -595,14 +609,49 @@ export class UsageResolver {
       const code = this.extractCodeFromLine(lineText, isPy, state, ext);
 
       if (isConstructor && targetClass) {
-        // If constructor, must match TargetClass(...) or subclass super().__init__
-        const instantiateRegex = new RegExp(`(?:new\\s+)?\\b${escapedTarget}\\s*\\(`);
-        const explicitInitRegex = new RegExp(`\\b${escapedTarget}\\.__init__\\s*\\(`);
-        const isInstantiate = instantiateRegex.test(code) || explicitInitRegex.test(code);
-
         // Exclude class definitions and imports
         if (new RegExp(`^\\s*class\\s+${escapedTarget}\\b`).test(lineText)) continue;
         if (new RegExp(`^\\s*(?:from\\s+\\S+\\s+import|import)\\s+`).test(lineText)) continue;
+
+        // Discard attribute/logging calls like self.error, logging.error, logger.error, etc.
+        const isSelfOrLogging = new RegExp(
+          `\\b(?:self|cls|this|logging|logger|console|stats|gcode)\\.${escapedTarget}\\b`
+        ).test(code);
+        if (isSelfOrLogging) continue;
+
+        const isRefCurrentFile = Boolean(
+          scanContext?.sourceUri && ref.uri.toString() === scanContext.sourceUri.toString()
+        );
+        const escSourceMod = scanContext?.sourceModuleName
+          ? scanContext.sourceModuleName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+          : '';
+
+        // Bare instantiation: (?<![\.\w])TargetClass\s*\(
+        const bareInstantiateRegex = new RegExp(`(?:new\\s+)?(?<![\\.\\w])${escapedTarget}\\s*\\(`);
+        const modInstantiateRegex = escSourceMod
+          ? new RegExp(`(?<![\\.\\w])${escSourceMod}\\.${escapedTarget}\\s*\\(`)
+          : null;
+        const explicitInitRegex = new RegExp(
+          `(?<![\\.\\w])(?:${escSourceMod}\\.)?${escapedTarget}\\.__init__\\s*\\(`
+        );
+
+        let isInstantiate = false;
+        if (isRefCurrentFile) {
+          isInstantiate = bareInstantiateRegex.test(code) || explicitInitRegex.test(code);
+        } else {
+          // In another file: only match if file imports targetClass or targetModule
+          const importsFromSource = escSourceMod && new RegExp(`\\b${escSourceMod}\\b`).test(fileContent);
+          const importsClassDirectly =
+            Boolean(scanContext?.isClassUnique) &&
+            new RegExp(`\\b${escapedTarget}\\b`).test(fileContent);
+
+          if (importsFromSource || importsClassDirectly) {
+            isInstantiate =
+              bareInstantiateRegex.test(code) ||
+              (Boolean(modInstantiateRegex) && modInstantiateRegex!.test(code)) ||
+              explicitInitRegex.test(code);
+          }
+        }
 
         if (!isInstantiate) {
           // Check if subclass super call
@@ -610,7 +659,9 @@ export class UsageResolver {
             /\bsuper\b.*(?:\.__init__|constructor|\b)/.test(code) &&
             Boolean(
               scanContext?.subClassNames &&
-              Array.from(scanContext.subClassNames).some((s) => fileContent.toLowerCase().includes(`class ${s}`))
+                Array.from(scanContext.subClassNames).some((s) =>
+                  fileContent.toLowerCase().includes(`class ${s}`)
+                )
             );
           if (!isSubclassSuper) {
             continue; // Not a caller of targetClass constructor, discard!
@@ -774,24 +825,89 @@ export class UsageResolver {
       ? targetClassName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
       : '';
 
-    // Collect class aliases in this file if constructor matching
-    const localTargetNames = new Set<string>();
+    const sourceUri = context?.sourceUri;
+    const sourceModuleName = context?.sourceModuleName;
+    const isCurrentFile = Boolean(sourceUri && uri.toString() === sourceUri.toString());
+
+    // In constructor mode: determine valid call forms for this specific file
+    let fileCanInstantiate = false;
+    const bareCallNames = new Set<string>();
+    const moduleCallPrefixes = new Set<string>();
+
     if (isConstructor && targetClassName) {
-      localTargetNames.add(targetClassName);
-      if (context?.targetClassNames) {
-        for (const t of context.targetClassNames) {
-          localTargetNames.add(t);
+      if (isCurrentFile) {
+        fileCanInstantiate = true;
+        bareCallNames.add(targetClassName);
+      } else {
+        // Other file: check if it imports targetClassName from sourceModuleName
+        if (isPython && sourceModuleName) {
+          const escSourceMod = sourceModuleName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          // A. from <pkg>.<module> import <class> [as <alias>]
+          const fromRegex = new RegExp(
+            `^\\s*from\\s+([A-Za-z0-9_.]*\\b${escSourceMod}\\b[A-Za-z0-9_.]*)\\s+import\\s+([^#\\r\\n]+)`,
+            'm'
+          );
+          const fromMatch = text.match(fromRegex);
+          if (fromMatch) {
+            const importedItems = fromMatch[2];
+            if (importedItems.includes('*')) {
+              bareCallNames.add(targetClassName);
+              fileCanInstantiate = true;
+            } else {
+              const items = importedItems.split(',');
+              for (const item of items) {
+                const parts = item.trim().split(/\s+as\s+/);
+                const orig = parts[0].trim();
+                const alias = (parts[1] || orig).trim();
+                if (orig === targetClassName) {
+                  bareCallNames.add(alias);
+                  fileCanInstantiate = true;
+                  break;
+                }
+              }
+            }
+          }
+
+          // B. import <module> [as <alias>] or from <pkg> import <module> [as <alias>]
+          const modRegex = new RegExp(
+            `^\\s*(?:import\\s+.*?\\b${escSourceMod}\\b(?:\\s+as\\s+([A-Za-z0-9_]+))?|from\\s+\\S+\\s+import\\s+.*?\\b${escSourceMod}\\b(?:\\s+as\\s+([A-Za-z0-9_]+))?)`,
+            'm'
+          );
+          const modMatch = text.match(modRegex);
+          if (modMatch) {
+            const modAlias = modMatch[1] || sourceModuleName;
+            moduleCallPrefixes.add(modAlias);
+            fileCanInstantiate = true;
+          }
+        }
+
+        // If the class is globally unique across workspace (e.g. BoxAction) and not a generic/lowercase name like "error"
+        if (
+          !fileCanInstantiate &&
+          context?.isClassUnique &&
+          targetClassName.length > 2 &&
+          /^[A-Z]/.test(targetClassName)
+        ) {
+          const importClassRegex = new RegExp(
+            `^\\s*(?:from\\s+\\S+\\s+import|import)\\s+.*?\\b${escapedTargetClass}\\b(?:\\s+as\\s+([A-Za-z0-9_]+))?`,
+            'm'
+          );
+          const match = text.match(importClassRegex);
+          if (match) {
+            bareCallNames.add(match[1] || targetClassName);
+            fileCanInstantiate = true;
+          }
+        }
+
+        // Check if this file defines a subclass of targetClassName
+        if (context?.subClassNames && context.subClassNames.size > 0) {
+          fileCanInstantiate = true;
         }
       }
-      if (isPython) {
-        const aliasRegex = new RegExp(
-          `^\\s*from\\s+\\S+\\s+import\\s+.*?\\b${escapedTargetClass}\\s+as\\s+([A-Za-z0-9_]+)`,
-          'gm'
-        );
-        let m: RegExpExecArray | null;
-        while ((m = aliasRegex.exec(text)) !== null) {
-          if (m[1]) localTargetNames.add(m[1]);
-        }
+
+      // If file cannot instantiate target constructor, skip scanning this file!
+      if (!fileCanInstantiate) {
+        return results;
       }
     }
 
@@ -860,24 +976,22 @@ export class UsageResolver {
 
       if (isConstructor && targetClassName) {
         // === CONSTRUCTOR USAGE RESOLUTION ===
-        // Must find places instantiating targetClassName or calling super().__init__ in subclasses.
-        // Must STRICTLY IGNORE unrelated classes calling __init__ or super().__init__!
-
+        // Must strictly ignore calls with attribute prefix like self.error, logging.error, etc.!
         let matched = false;
 
-        // 1. Direct Instantiation: TargetClass(...) or TargetClass.__init__(...) or new TargetClass(...)
-        for (const tName of localTargetNames) {
-          const escTName = tName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          const instantiateRegex = new RegExp(`(?:new\\s+)?\\b${escTName}\\s*\\(`);
-          const explicitInitRegex = new RegExp(`\\b${escTName}\\.__init__\\s*\\(`);
+        // 1. Bare Instantiation: (?<![\.\w])TargetClass\s*\(
+        for (const bName of bareCallNames) {
+          const escBName = bName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const instantiateRegex = new RegExp(`(?:new\\s+)?(?<![\\.\\w])${escBName}\\s*\\(`);
+          const explicitInitRegex = new RegExp(`(?<![\\.\\w])${escBName}\\.__init__\\s*\\(`);
 
           if (instantiateRegex.test(code) || explicitInitRegex.test(code)) {
             // Exclude class definition line: class TargetClass...
-            if (new RegExp(`^\\s*class\\s+${escTName}\\b`).test(line)) {
+            if (new RegExp(`^\\s*class\\s+${escBName}\\b`).test(line)) {
               continue;
             }
             // Exclude subclass definition line: class Sub(TargetClass):
-            if (new RegExp(`^\\s*class\\s+[A-Za-z0-9_]+\\s*\\([^)]*\\b${escTName}\\b`).test(line)) {
+            if (new RegExp(`^\\s*class\\s+[A-Za-z0-9_]+\\s*\\([^)]*\\b${escBName}\\b`).test(line)) {
               continue;
             }
             // Exclude import statements
@@ -888,7 +1002,37 @@ export class UsageResolver {
             const match = instantiateRegex.exec(line) || explicitInitRegex.exec(line);
             if (match) {
               const startChar = match.index;
-              const endChar = startChar + tName.length;
+              const endChar = startChar + bName.length;
+              results.push({
+                uri,
+                range: new vscode.Range(i, startChar, i, endChar),
+                text: trimmed,
+                relativePath: relPath,
+              });
+              matched = true;
+              break;
+            }
+          }
+        }
+
+        if (matched) continue;
+
+        // 2. Module-qualified Instantiation: (?<![\.\w])module.TargetClass\s*\(
+        for (const mPrefix of moduleCallPrefixes) {
+          const escMPrefix = mPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const modInstantiateRegex = new RegExp(`(?<![\\.\\w])${escMPrefix}\\.${escapedTargetClass}\\s*\\(`);
+          const modExplicitInitRegex = new RegExp(`(?<![\\.\\w])${escMPrefix}\\.${escapedTargetClass}\\.__init__\\s*\\(`);
+
+          if (modInstantiateRegex.test(code) || modExplicitInitRegex.test(code)) {
+            // Exclude import statements
+            if (new RegExp(`^\\s*(?:from\\s+\\S+\\s+import|import)\\s+`).test(line)) {
+              continue;
+            }
+
+            const match = modInstantiateRegex.exec(line) || modExplicitInitRegex.exec(line);
+            if (match) {
+              const startChar = match.index;
+              const endChar = startChar + match[0].length - 1;
               results.push({
                 uri,
                 range: new vscode.Range(i, startChar, i, endChar),

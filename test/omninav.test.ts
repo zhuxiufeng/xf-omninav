@@ -353,6 +353,88 @@ class BoxActionSub(BoxAction):
     assert.strictEqual(usages.some(u => u.uri.toString() === unrelatedDoc.uri.toString()), false, 'Unrelated classes MUST NOT be present');
     assert.strictEqual(usages.some(u => u.uri.toString() === boxDoc.uri.toString()), false, 'Base class own super call MUST NOT be present');
   });
+
+  it('should isolate class error(ErrorBase) from logging.error, self.error, and other modules own error classes', async () => {
+    const { UsageResolver } = await import('../src/resolver/usageResolver');
+    const { SmoothDefinitionProvider } = await import('../src/navigation/definitionProvider');
+    const { SymbolIndexer } = await import('../src/indexer/symbolIndexer');
+    const { MockTextDocument, Uri, Position, workspace } = await import('./vscode-mock');
+
+    const boxSaveCode = `
+class error(ErrorBase):
+    def __init__(self, msg, gcode, reactor, stats, box_save):
+        import re
+        super().__init__(msg)
+
+def save_state(self):
+    logging.error("Failed to write to flash")
+    self.error("Internal method call")
+    raise error("Box save checksum mismatch", self.gcode, self.reactor, self.stats, self)
+`;
+
+    const mcuCode = `
+class error(Exception):
+    pass
+
+def mcu_restart(self):
+    self.error("mcu restart failed")
+    logging.error("mcu log")
+    raise error("mcu error")
+`;
+
+    const boxActionCode = `
+from extras import box_save
+
+def run_box():
+    raise box_save.error("Box action failed", None, None, None, None)
+`;
+
+    const callerCode = `
+from extras.box_save import error
+
+def handle_box():
+    raise error("Handler error", None, None, None, None)
+`;
+
+    const boxSaveUri = Uri.file('/test/box_save.py');
+    const mcuUri = Uri.file('/test/mcu.py');
+    const boxActionUri = Uri.file('/test/box_action.py');
+    const callerUri = Uri.file('/test/caller.py');
+
+    const indexer = new SymbolIndexer();
+    indexer.indexFile(boxSaveUri as any, boxSaveCode);
+    indexer.indexFile(mcuUri as any, mcuCode);
+    indexer.indexFile(boxActionUri as any, boxActionCode);
+    indexer.indexFile(callerUri as any, callerCode);
+
+    const boxSaveDoc = new MockTextDocument(boxSaveCode, 'file:///test/box_save.py', 'python');
+    const mcuDoc = new MockTextDocument(mcuCode, 'file:///test/mcu.py', 'python');
+    const boxActionDoc = new MockTextDocument(boxActionCode, 'file:///test/box_action.py', 'python');
+    const callerDoc = new MockTextDocument(callerCode, 'file:///test/caller.py', 'python');
+    workspace.textDocuments.push(boxSaveDoc, mcuDoc, boxActionDoc, callerDoc);
+
+    // Line 2 in boxSaveCode: "    def __init__(self, msg, gcode, reactor, stats, box_save):"
+    const defPos = new Position(2, 9);
+    const atDef = UsageResolver.isAtDefinition(boxSaveDoc as any, defPos, '__init__');
+    assert.strictEqual(atDef, true);
+
+    const usages = await UsageResolver.findUsages(boxSaveDoc as any, defPos, '__init__', indexer);
+
+    // Must find:
+    // 1. raise error(...) in box_save.py (line 9)
+    // 2. raise box_save.error(...) in box_action.py (line 4)
+    // 3. raise error(...) in caller.py (line 4)
+    assert.strictEqual(usages.length, 3, 'Must ONLY find callers of box_save.py error class');
+    assert.ok(usages.some(u => u.uri.toString() === boxSaveDoc.uri.toString() && u.range.start.line === 9));
+    assert.ok(usages.some(u => u.uri.toString() === boxActionDoc.uri.toString() && u.text.includes('box_save.error(')));
+    assert.ok(usages.some(u => u.uri.toString() === callerDoc.uri.toString() && u.text.includes('error(')));
+
+    // Must strictly EXCLUDE:
+    assert.strictEqual(usages.some(u => u.uri.toString() === mcuDoc.uri.toString()), false, 'mcu.py error class MUST be excluded');
+    assert.strictEqual(usages.some(u => u.text.includes('logging.error')), false, 'logging.error MUST be excluded');
+    assert.strictEqual(usages.some(u => u.text.includes('self.error')), false, 'self.error MUST be excluded');
+    assert.strictEqual(usages.some(u => u.range.start.line === 4 && u.uri.toString() === boxSaveDoc.uri.toString()), false, 'super().__init__ in self class MUST be excluded');
+  });
 });
 
 describe('Optimization & Raw I/O tests', () => {
