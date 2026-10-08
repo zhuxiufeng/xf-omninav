@@ -442,9 +442,9 @@ export class NavigateCommand {
     position: vscode.Position,
     symbolName: string
   ): Promise<void> {
-    const usages = await UsageResolver.findUsages(document, position, symbolName);
+    const usages = await UsageResolver.findUsages(document, position, symbolName, this.indexer);
     if (usages.length === 0) {
-      vscode.window.showInformationMessage(`XF OmniJump: No usages found for "${symbolName}".`);
+      vscode.window.showInformationMessage(`XF OmniJump: No call sites found for "${symbolName}".`);
       return;
     }
 

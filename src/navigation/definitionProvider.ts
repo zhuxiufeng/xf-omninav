@@ -38,40 +38,19 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
     const symbolName = document.getText(wordRange);
 
     // 2.5 PyCharm Feature: If cursor is ALREADY at the definition header (e.g. def foo, class Bar):
-    // Automatically switch to finding overrides/implementations and usages/callers!
+    // Jump directly to the direct call site (or display list of call sites if multiple)
     if (UsageResolver.isAtDefinition(document, position, symbolName)) {
-      const results: vscode.LocationLink[] = [];
-
-      // A. Overriding implementations / other definitions in other files
-      const exact = this.indexer.findExact(symbolName);
-      const otherDefs = exact.filter(
-        (d) => !(d.uri.toString() === document.uri.toString() && d.range.start.line === position.line)
-      );
-      for (const def of otherDefs) {
-        results.push({
+      const usages = await UsageResolver.findUsages(document, position, symbolName, this.indexer);
+      if (usages.length > 0) {
+        return usages.map((u) => ({
           originSelectionRange: wordRange,
-          targetUri: def.uri,
-          targetRange: def.range,
-          targetSelectionRange: def.selectionRange,
-        });
+          targetUri: u.uri,
+          targetRange: u.range,
+          targetSelectionRange: u.range,
+        }));
       }
 
-      // B. Usages / Callers
-      const usages = await UsageResolver.findUsages(document, position, symbolName);
-      for (const u of usages) {
-        if (!results.some((r) => r.targetUri.toString() === u.uri.toString() && r.targetRange.start.line === u.range.start.line)) {
-          results.push({
-            originSelectionRange: wordRange,
-            targetUri: u.uri,
-            targetRange: u.range,
-            targetSelectionRange: u.range,
-          });
-        }
-      }
-
-      if (results.length > 0) {
-        return results;
-      }
+      return null;
     }
 
     // 3. Resolve receiver & container context (subclass override resolution)

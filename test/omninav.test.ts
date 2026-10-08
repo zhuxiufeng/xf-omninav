@@ -213,6 +213,76 @@ class BoxAction:
     assert.strictEqual(calls[0].range.start.line, 1);
     assert.strictEqual(calls[1].range.start.line, 2);
   });
+
+  it('should filter out symbols that only appear in comments, inline comments, or docstrings', async () => {
+    const { UsageResolver } = await import('../src/resolver/usageResolver');
+    const { Uri } = await import('./vscode-mock');
+
+    const content = `
+def box_should_log_state_line(cmd_byte, ret_state, verbose=False): #decide whether output state in ret_parse_process function
+    # another comment mentioning ret_parse_process
+    """ docstring mentioning ret_parse_process """
+    ret = ret_parse_process(cmd_byte) # actual call to ret_parse_process
+`;
+
+    const uri = Uri.file('/test/serial_485_wrapper.py');
+    const calls = UsageResolver.scanTextForCalls(uri as any, content, 'ret_parse_process');
+
+    assert.strictEqual(calls.length, 1, 'Must ONLY find the actual call site on line 4, NOT the comment occurrences');
+    assert.strictEqual(calls[0].range.start.line, 4);
+    assert.ok(calls[0].text.includes('ret = ret_parse_process(cmd_byte)'));
+  });
+
+  it('should jump directly to function caller when clicking subclass method definition with generate_Tnn_map', async () => {
+    const { UsageResolver } = await import('../src/resolver/usageResolver');
+    const { SmoothDefinitionProvider } = await import('../src/navigation/definitionProvider');
+    const { SymbolIndexer } = await import('../src/indexer/symbolIndexer');
+    const { MockTextDocument, Uri, Position, workspace } = await import('./vscode-mock');
+
+    const baseCode = `
+class BoxState:
+    def generate_Tnn_map(self):
+        pass
+
+    def state_init(self):
+        self.generate_Tnn_map()
+`;
+    const subCode = `
+from extras.box_wrapper import BoxState as BoxStateBase
+
+class BoxState(BoxStateBase):
+    def __init__(self):
+        self.state_init()
+
+    def generate_Tnn_map(self):
+        print("subclass override")
+`;
+    const indexer = new SymbolIndexer();
+    const baseUri = Uri.file('/test/box_wrapper.py');
+    const subUri = Uri.file('/test/box_lite2_wrapper.py');
+
+    indexer.indexFile(baseUri as any, baseCode);
+    indexer.indexFile(subUri as any, subCode);
+
+    const baseDoc = new MockTextDocument(baseCode, 'file:///test/box_wrapper.py', 'python');
+    const subDoc = new MockTextDocument(subCode, 'file:///test/box_lite2_wrapper.py', 'python');
+    workspace.textDocuments.push(baseDoc, subDoc);
+
+    // Line 7 in subCode is: "    def generate_Tnn_map(self):"
+    const defPos = new Position(7, 10);
+
+    // 1. Definition check
+    const atDef = UsageResolver.isAtDefinition(subDoc as any, defPos, 'generate_Tnn_map');
+    assert.strictEqual(atDef, true);
+
+    // 2. Test SmoothDefinitionProvider returns ONLY the subclass call site (line 5 in subCode)!
+    const provider = new SmoothDefinitionProvider(indexer);
+    const results = (await provider.provideDefinition(subDoc as any, defPos, {} as any)) as any[];
+
+    assert.ok(results && results.length === 1, 'Must return exactly 1 subclass call site for direct jump');
+    assert.strictEqual(results[0].targetUri.toString(), subDoc.uri.toString(), 'Target must be in subclass file, NOT base class file');
+    assert.strictEqual(results[0].targetRange.start.line, 5, 'Target must be line 5 (self.state_init() in subclass)');
+  });
 });
 
 describe('Optimization & Raw I/O tests', () => {
