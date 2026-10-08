@@ -78,6 +78,10 @@ export class UsageResolver {
     symbolName: string,
     indexer?: any
   ): Promise<UsageItem[]> {
+    if (indexer && typeof indexer.ensureSynchronized === 'function') {
+      indexer.ensureSynchronized(document.uri);
+    }
+
     const seen = new Set<string>();
     const results: UsageItem[] = [];
     const defKey = `${document.uri.toString()}:${position.line}`;

@@ -23,6 +23,9 @@ export class NavigateCommand {
     const document = editor.document;
     const position = editor.selection.active;
 
+    // Ensure any dirty edits in current document or workspace are synced just before jump
+    this.indexer.ensureSynchronized(document.uri);
+
     // 1. Save history before jump
     globalHistory.pushCurrentLocation(editor);
 

@@ -20,6 +20,9 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
       return null;
     }
 
+    // Ensure any dirty edits in current document or workspace are synced just before jump
+    this.indexer.ensureSynchronized(document.uri);
+
     // 1. Resolve imports and file path strings first
     const supportImports = getOmniConfig<boolean>('supportFileImports', true);
     if (supportImports) {

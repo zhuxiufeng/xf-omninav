@@ -18,9 +18,50 @@ export class SymbolIndexer implements vscode.Disposable {
   public readonly onDidIndexUpdate = this._onDidIndexUpdate.event;
 
   private pendingChanges: Map<string, NodeJS.Timeout> = new Map();
+  private dirtyDocuments: Map<string, vscode.TextDocument> = new Map();
 
   constructor() {
     this.registerWatchers();
+  }
+
+  /**
+   * Mark a document as dirty (edited).
+   */
+  public markDirty(document: vscode.TextDocument): void {
+    this.dirtyDocuments.set(document.uri.toString(), document);
+  }
+
+  /**
+   * Ensure dirty documents (or specific target document) are synchronously indexed before jump/lookup.
+   */
+  public ensureSynchronized(targetUri?: vscode.Uri | string): void {
+    if (targetUri) {
+      const uriStr = typeof targetUri === 'string' ? targetUri : targetUri.toString();
+      const doc = this.dirtyDocuments.get(uriStr);
+      if (doc) {
+        this.dirtyDocuments.delete(uriStr);
+        const timer = this.pendingChanges.get(uriStr);
+        if (timer) {
+          clearTimeout(timer);
+          this.pendingChanges.delete(uriStr);
+        }
+        this.indexDocument(doc);
+      }
+      return;
+    }
+
+    // Flush all pending dirty documents
+    if (this.dirtyDocuments.size > 0) {
+      for (const [uriStr, doc] of Array.from(this.dirtyDocuments.entries())) {
+        this.dirtyDocuments.delete(uriStr);
+        const timer = this.pendingChanges.get(uriStr);
+        if (timer) {
+          clearTimeout(timer);
+          this.pendingChanges.delete(uriStr);
+        }
+        this.indexDocument(doc);
+      }
+    }
   }
 
   public get totalSymbols(): number {
@@ -443,17 +484,26 @@ export class SymbolIndexer implements vscode.Disposable {
       })
     );
 
-    // 2. On document edit: re-index immediately so any immediate jump or definition request has 100% accurate lines
+    // 2. On document edit: mark dirty instantly (0ms overhead during typing!),
+    // and schedule a debounced background refresh (500ms).
+    // If user jumps before 500ms, ensureSynchronized() flushes instantly.
     this.disposables.push(
       vscode.workspace.onDidChangeTextDocument((e) => {
         const uriStr = e.document.uri.toString();
+        this.markDirty(e.document);
+
         const existingTimer = this.pendingChanges.get(uriStr);
         if (existingTimer) {
           clearTimeout(existingTimer);
-          this.pendingChanges.delete(uriStr);
         }
 
-        this.indexDocument(e.document);
+        const timer = setTimeout(() => {
+          this.pendingChanges.delete(uriStr);
+          this.dirtyDocuments.delete(uriStr);
+          this.indexDocument(e.document);
+        }, 500);
+
+        this.pendingChanges.set(uriStr, timer);
       })
     );
 
