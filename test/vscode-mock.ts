@@ -213,6 +213,7 @@ export const workspace = {
 export const window = {
   activeTextEditor: undefined as any,
   showInformationMessage: async () => undefined,
+  showWarningMessage: async () => undefined,
   showQuickPick: async () => undefined,
   showTextDocument: async (doc: any) => ({
     document: doc,

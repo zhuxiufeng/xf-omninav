@@ -897,4 +897,92 @@ def init():
     assert.ok(modDef, 'Must find definition for module chelper');
     assert.strictEqual(modDef.uri.fsPath, initUri.fsPath, 'Must jump to chelper/__init__.py');
   });
+
+  it('should NOT jump to unrelated class when self attribute does not exist on self and should show warning', async () => {
+    const code = `
+class BoxAction:
+    def __init__(self):
+        self.power_loss_tnn = 100
+
+class BoxManager:
+    def __init__(self):
+        self.box_action = BoxAction()
+
+    def cmd_box_end_print(self, gcmd):
+        if self.power_loss_tnn:
+            pass
+        self.box_action.power_loss_tnn = None
+`;
+    const doc = new MockTextDocument(code, 'file:///workspace/box.py', 'python');
+    const indexer = new SymbolIndexer();
+    indexer.indexDocument(doc as any);
+
+    const { SmoothDefinitionProvider } = await import('../src/navigation/definitionProvider');
+    const { NavigateCommand } = await import('../src/navigation/navigateCommand');
+    const { window, Selection } = await import('./vscode-mock');
+
+    const provider = new SmoothDefinitionProvider(indexer);
+
+    // 1. SmoothDefinitionProvider: clicking self.power_loss_tnn at line 10
+    // Line 10: "        if self.power_loss_tnn:" (start col 16)
+    const posSelf = new Position(10, 16);
+    const resultSelf = await provider.provideDefinition(
+      doc as any,
+      posSelf as any,
+      {} as any
+    );
+    assert.strictEqual(
+      resultSelf,
+      null,
+      'Must return null when attribute power_loss_tnn does not exist on self/BoxManager'
+    );
+
+    // 2. NavigateCommand: clicking self.power_loss_tnn at line 10
+    let warningMsg = '';
+    window.showWarningMessage = async (msg: string) => {
+      warningMsg = msg;
+      return undefined;
+    };
+
+    let jumped = false;
+    window.showTextDocument = async (targetDoc: any) => {
+      jumped = true;
+      return {
+        document: targetDoc,
+        selection: new Selection(new Position(0, 0), new Position(0, 0)),
+        revealRange: () => {},
+      } as any;
+    };
+
+    window.activeTextEditor = {
+      document: doc,
+      selection: new Selection(posSelf, posSelf),
+    } as any;
+
+    const cmd = new NavigateCommand(indexer);
+    await cmd.execute();
+
+    assert.strictEqual(jumped, false, 'NavigateCommand must NOT jump to unrelated BoxAction class');
+    assert.ok(
+      warningMsg.includes('Attribute "power_loss_tnn" not found in class "BoxManager"'),
+      `Expected warning message, got: "${warningMsg}"`
+    );
+
+    // 3. But clicking self.box_action.power_loss_tnn at line 12 SHOULD jump to BoxAction.power_loss_tnn!
+    // Line 12: "        self.box_action.power_loss_tnn = None" -> pos on power_loss_tnn (col 25)
+    const posBoxAction = new Position(12, 25);
+    const resultBoxAction = (await provider.provideDefinition(
+      doc as any,
+      posBoxAction as any,
+      {} as any
+    )) as any[];
+    assert.ok(resultBoxAction, 'Must resolve self.box_action.power_loss_tnn');
+    assert.strictEqual(resultBoxAction.length, 1);
+    assert.strictEqual(
+      resultBoxAction[0].targetRange.start.line,
+      3,
+      'Must jump directly to BoxAction.power_loss_tnn on line 3'
+    );
+  });
 });
+

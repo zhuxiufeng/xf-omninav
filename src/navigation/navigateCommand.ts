@@ -88,6 +88,20 @@ export class NavigateCommand {
         await this.jumpToLocation(inheritedDef.uri, inheritedDef.selectionRange.start);
         return;
       }
+
+      // Check immediate in-document definition (e.g. self.xxx = ... created in this file)
+      const localDef = this.scanLocalDocument(document, symbolName, receiver.containerName);
+      if (localDef) {
+        await this.jumpToLocation(localDef.uri, localDef.selectionRange.start);
+        return;
+      }
+
+      // Attribute is explicitly bound to self / current class hierarchy.
+      // If not found in current class or its superclasses, strictly DO NOT fall back to other unrelated classes!
+      vscode.window.showWarningMessage(
+        `XF OmniJump: Attribute "${symbolName}" not found in class "${receiver.containerName}".`
+      );
+      return;
     }
 
     // 2.8 Super-invocation: super().method() -> Jump directly to parent class definition!
@@ -406,10 +420,12 @@ export class NavigateCommand {
 
   private scanLocalDocument(
     document: vscode.TextDocument,
-    symbolName: string
+    symbolName: string,
+    targetContainer?: string
   ): SymbolDefinition | null {
     const text = document.getText();
     const lines = text.split(/\r?\n/);
+    const isPython = document.languageId === 'python';
     const regexList = [
       new RegExp(`^(\\s*)(?:self|cls)\\.(${symbolName})\\b(?:\\s*:\\s*[^=]+)?\\s*=`),
       new RegExp(`^(\\s*)(?:async\\s+)?def\\s+(${symbolName})\\s*\\(`),
@@ -417,19 +433,41 @@ export class NavigateCommand {
       new RegExp(`^(\\s*)(${symbolName})\\b(?:\\s*:\\s*[^=]+)?\\s*=`),
     ];
 
+    let currentClassName: string | undefined;
+    let currentClassIndent = -1;
+
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
+      if (isPython) {
+        const classMatch = line.match(/^(\s*)class\s+([A-Za-z0-9_]+)/);
+        if (classMatch) {
+          currentClassName = classMatch[2];
+          currentClassIndent = classMatch[1].length;
+        } else if (currentClassIndent >= 0) {
+          const indentMatch = line.match(/^(\s*)/);
+          const indent = indentMatch ? indentMatch[1].length : 0;
+          if (line.trim().length > 0 && !line.trim().startsWith('#') && indent <= currentClassIndent) {
+            currentClassName = undefined;
+            currentClassIndent = -1;
+          }
+        }
+      }
+
       if (!line.includes(symbolName)) {
         continue;
       }
       for (const regex of regexList) {
         const match = regex.exec(line);
         if (match) {
+          if (targetContainer && currentClassName && !this.matchContainer(currentClassName, targetContainer)) {
+            continue;
+          }
           const startCol = line.indexOf(symbolName);
           const endCol = startCol + symbolName.length;
           return {
             name: symbolName,
             kind: line.includes('def ') ? 'method' : line.includes('class ') ? 'class' : 'property',
+            containerName: currentClassName,
             uri: document.uri,
             range: new vscode.Range(i, 0, i, line.length),
             selectionRange: new vscode.Range(i, startCol, i, endCol),
