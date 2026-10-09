@@ -984,5 +984,87 @@ class BoxManager:
       'Must jump directly to BoxAction.power_loss_tnn on line 3'
     );
   });
+
+  it('should accurately calibrate jump position when function changes position in document', async () => {
+    // 1. Initial code: helper_func is at line 2
+    const initialCode = `def caller():
+    helper_func()
+def helper_func():
+    return 42
+`;
+    const docUri = Uri.file('/workspace/service.py');
+    const indexer = new SymbolIndexer();
+    indexer.indexFile(docUri, initialCode);
+
+    // Initial index: helper_func is at line 2
+    const initialDefs = indexer.findExact('helper_func');
+    assert.strictEqual(initialDefs[0].range.start.line, 2);
+
+    // 2. User edits file, adding lines at the top, moving helper_func down to line 6
+    const editedCode = `# Line 0
+# Line 1
+# Line 2
+# Line 3
+def caller():
+    helper_func()
+def helper_func():
+    return 42
+`;
+    const editedDoc = new MockTextDocument(editedCode, docUri.fsPath, 'python');
+    workspace.textDocuments = [editedDoc];
+
+    const { SmoothDefinitionProvider } = await import('../src/navigation/definitionProvider');
+    const { NavigateCommand } = await import('../src/navigation/navigateCommand');
+    const { window, Selection } = await import('./vscode-mock');
+
+    // Test SmoothDefinitionProvider (F12 / Ctrl+Click)
+    const provider = new SmoothDefinitionProvider(indexer);
+    // Cursor on helper_func() inside caller (line 5, col 6)
+    const posCaller = new Position(5, 6);
+    const defResult = (await provider.provideDefinition(
+      editedDoc as any,
+      posCaller as any,
+      {} as any
+    )) as any[];
+
+    assert.ok(defResult, 'Must find definition for helper_func');
+    assert.strictEqual(defResult.length, 1);
+    assert.strictEqual(
+      defResult[0].targetRange.start.line,
+      6,
+      'Definition provider must calibrate to new line 6 instead of stale line 2'
+    );
+
+    // Test NavigateCommand (Alt+B / OmniJump)
+    let jumpedLine = -1;
+    window.showTextDocument = async (targetDoc: any) => {
+      const mockEditor = {
+        document: targetDoc,
+        selection: new Selection(new Position(0, 0), new Position(0, 0)),
+        revealRange: () => {},
+      };
+      Object.defineProperty(mockEditor, 'selection', {
+        set(sel: any) {
+          jumpedLine = sel.active.line;
+        },
+      });
+      return mockEditor as any;
+    };
+
+    window.activeTextEditor = {
+      document: editedDoc,
+      selection: new Selection(posCaller, posCaller),
+    } as any;
+
+    const cmd = new NavigateCommand(indexer);
+    await cmd.execute();
+
+    assert.strictEqual(
+      jumpedLine,
+      6,
+      'NavigateCommand must calibrate to new line 6 instead of jumping to stale line 2'
+    );
+  });
 });
+
 

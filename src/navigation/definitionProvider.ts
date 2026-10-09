@@ -21,7 +21,7 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
     }
 
     // Ensure any dirty edits in current document or workspace are synced just before jump
-    this.indexer.ensureSynchronized(document.uri);
+    this.indexer.ensureSynchronized();
 
     // 1. Resolve imports and file path strings first
     const supportImports = getOmniConfig<boolean>('supportFileImports', true);
@@ -67,12 +67,7 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
       const localScope = ContextResolver.resolveLocalScope(document, position, symbolName);
       if (localScope) {
         return [
-          {
-            originSelectionRange: wordRange,
-            targetUri: localScope.uri,
-            targetRange: localScope.range,
-            targetSelectionRange: localScope.selectionRange,
-          },
+          await this.toCalibratedLocationLink(wordRange, localScope.uri, localScope.range, localScope.selectionRange, symbolName)
         ];
       }
     }
@@ -88,12 +83,7 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
       );
       if (subclassDef) {
         return [
-          {
-            originSelectionRange: wordRange,
-            targetUri: subclassDef.uri,
-            targetRange: subclassDef.range,
-            targetSelectionRange: subclassDef.selectionRange,
-          },
+          await this.toCalibratedLocationLink(wordRange, subclassDef.uri, subclassDef.range, subclassDef.selectionRange, symbolName, receiver.containerName)
         ];
       }
 
@@ -105,12 +95,7 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
       );
       if (inheritedDef) {
         return [
-          {
-            originSelectionRange: wordRange,
-            targetUri: inheritedDef.uri,
-            targetRange: inheritedDef.range,
-            targetSelectionRange: inheritedDef.selectionRange,
-          },
+          await this.toCalibratedLocationLink(wordRange, inheritedDef.uri, inheritedDef.range, inheritedDef.selectionRange, symbolName, inheritedDef.containerName)
         ];
       }
 
@@ -118,12 +103,7 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
       const localDef = this.scanLocalDocument(document, symbolName, receiver.containerName);
       if (localDef) {
         return [
-          {
-            originSelectionRange: wordRange,
-            targetUri: localDef.uri,
-            targetRange: localDef.range,
-            targetSelectionRange: localDef.selectionRange,
-          },
+          await this.toCalibratedLocationLink(wordRange, localDef.uri, localDef.range, localDef.selectionRange, symbolName, receiver.containerName)
         ];
       }
 
@@ -141,12 +121,7 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
       );
       if (parentDef) {
         return [
-          {
-            originSelectionRange: wordRange,
-            targetUri: parentDef.uri,
-            targetRange: parentDef.range,
-            targetSelectionRange: parentDef.selectionRange,
-          },
+          await this.toCalibratedLocationLink(wordRange, parentDef.uri, parentDef.range, parentDef.selectionRange, symbolName, parentDef.containerName)
         ];
       }
     }
@@ -168,12 +143,7 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
           const chosen = inDoc || overrides[0];
           if (inDoc || overrides.length === 1 || !directMatch) {
             return [
-              {
-                originSelectionRange: wordRange,
-                targetUri: chosen.uri,
-                targetRange: chosen.range,
-                targetSelectionRange: chosen.selectionRange,
-              },
+              await this.toCalibratedLocationLink(wordRange, chosen.uri, chosen.range, chosen.selectionRange, symbolName, chosen.containerName)
             ];
           }
         }
@@ -181,12 +151,7 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
 
       if (directMatch) {
         return [
-          {
-            originSelectionRange: wordRange,
-            targetUri: directMatch.uri,
-            targetRange: directMatch.range,
-            targetSelectionRange: directMatch.selectionRange,
-          },
+          await this.toCalibratedLocationLink(wordRange, directMatch.uri, directMatch.range, directMatch.selectionRange, symbolName, directMatch.containerName)
         ];
       }
     }
@@ -248,15 +213,56 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
       return null;
     }
 
-    // Convert to LocationLinks
-    return matchedDefs.map((def) => {
+    // Convert to calibrated LocationLinks
+    return await Promise.all(
+      matchedDefs.map((def) =>
+        this.toCalibratedLocationLink(wordRange, def.uri, def.range, def.selectionRange, symbolName, def.containerName)
+      )
+    );
+  }
+
+  /**
+   * Ensure target range accurately points to the symbol even if lines shifted after indexing.
+   */
+  private async toCalibratedLocationLink(
+    originSelectionRange: vscode.Range,
+    targetUri: vscode.Uri,
+    targetRange: vscode.Range,
+    targetSelectionRange: vscode.Range,
+    symbolName?: string,
+    containerName?: string
+  ): Promise<vscode.LocationLink> {
+    if (!symbolName) {
+      return { originSelectionRange, targetUri, targetRange, targetSelectionRange };
+    }
+
+    // Check if open in workspace
+    const openDoc = vscode.workspace.textDocuments?.find(
+      (d) => d.uri.toString() === targetUri.toString()
+    );
+    if (!openDoc) {
+      return { originSelectionRange, targetUri, targetRange, targetSelectionRange };
+    }
+
+    const lineIdx = targetSelectionRange.start.line;
+    if (lineIdx >= 0 && lineIdx < openDoc.lineCount) {
+      if (openDoc.lineAt(lineIdx).text.includes(symbolName)) {
+        return { originSelectionRange, targetUri, targetRange, targetSelectionRange };
+      }
+    }
+
+    // Line shifted! Calibrate dynamically via scanLocalDocument
+    const local = this.scanLocalDocument(openDoc, symbolName, containerName) || this.scanLocalDocument(openDoc, symbolName);
+    if (local) {
       return {
-        originSelectionRange: wordRange,
-        targetUri: def.uri,
-        targetRange: def.range,
-        targetSelectionRange: def.selectionRange,
+        originSelectionRange,
+        targetUri,
+        targetRange: local.range,
+        targetSelectionRange: local.selectionRange,
       };
-    });
+    }
+
+    return { originSelectionRange, targetUri, targetRange, targetSelectionRange };
   }
 
   /**

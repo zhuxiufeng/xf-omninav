@@ -24,7 +24,7 @@ export class NavigateCommand {
     const position = editor.selection.active;
 
     // Ensure any dirty edits in current document or workspace are synced just before jump
-    this.indexer.ensureSynchronized(document.uri);
+    this.indexer.ensureSynchronized();
 
     // 1. Save history before jump
     globalHistory.pushCurrentLocation(editor);
@@ -59,7 +59,7 @@ export class NavigateCommand {
     if (!receiver.isSelf && !receiver.isCls && !receiver.isSuper && !receiver.varName) {
       const localScope = ContextResolver.resolveLocalScope(document, position, symbolName);
       if (localScope) {
-        await this.jumpToLocation(localScope.uri, localScope.selectionRange.start);
+        await this.jumpToLocation(localScope.uri, localScope.selectionRange.start, symbolName);
         return;
       }
     }
@@ -74,7 +74,7 @@ export class NavigateCommand {
         document.uri
       );
       if (subclassDef) {
-        await this.jumpToLocation(subclassDef.uri, subclassDef.selectionRange.start);
+        await this.jumpToLocation(subclassDef.uri, subclassDef.selectionRange.start, symbolName, receiver.containerName);
         return;
       }
 
@@ -85,14 +85,14 @@ export class NavigateCommand {
         document.uri
       );
       if (inheritedDef) {
-        await this.jumpToLocation(inheritedDef.uri, inheritedDef.selectionRange.start);
+        await this.jumpToLocation(inheritedDef.uri, inheritedDef.selectionRange.start, symbolName, inheritedDef.containerName);
         return;
       }
 
       // Check immediate in-document definition (e.g. self.xxx = ... created in this file)
       const localDef = this.scanLocalDocument(document, symbolName, receiver.containerName);
       if (localDef) {
-        await this.jumpToLocation(localDef.uri, localDef.selectionRange.start);
+        await this.jumpToLocation(localDef.uri, localDef.selectionRange.start, symbolName, receiver.containerName);
         return;
       }
 
@@ -112,7 +112,7 @@ export class NavigateCommand {
         document.uri
       );
       if (parentDef) {
-        await this.jumpToLocation(parentDef.uri, parentDef.selectionRange.start);
+        await this.jumpToLocation(parentDef.uri, parentDef.selectionRange.start, symbolName, parentDef.containerName);
         return;
       }
     }
@@ -131,14 +131,14 @@ export class NavigateCommand {
           const inDoc = overrides.find((o) => o.uri.toString() === document.uri.toString());
           const chosen = inDoc || overrides[0];
           if (inDoc || overrides.length === 1 || !directMatch) {
-            await this.jumpToLocation(chosen.uri, chosen.selectionRange.start);
+            await this.jumpToLocation(chosen.uri, chosen.selectionRange.start, symbolName, chosen.containerName);
             return;
           }
         }
       }
 
       if (directMatch) {
-        await this.jumpToLocation(directMatch.uri, directMatch.selectionRange.start);
+        await this.jumpToLocation(directMatch.uri, directMatch.selectionRange.start, symbolName, directMatch.containerName);
         return;
       }
     }
@@ -178,7 +178,7 @@ export class NavigateCommand {
           if (targetDef && targetDef.containerName) {
             const overrides = this.indexer.findSubclassOverrides(targetDef.containerName, symbolName);
             if (overrides.length === 1 && ContextResolver.isAbstractOrEmpty(document.getText(), targetDef)) {
-              await this.jumpToLocation(overrides[0].uri, overrides[0].selectionRange.start);
+              await this.jumpToLocation(overrides[0].uri, overrides[0].selectionRange.start, symbolName, overrides[0].containerName);
               return;
             }
           }
@@ -187,7 +187,7 @@ export class NavigateCommand {
             'targetSelectionRange' in loc && loc.targetSelectionRange
               ? loc.targetSelectionRange.start
               : targetRange.start;
-          await this.jumpToLocation(targetUri, targetPos);
+          await this.jumpToLocation(targetUri, targetPos, symbolName, targetDef?.containerName || containerHint);
           return;
         } else {
           // Multiple LSP definitions, show them
@@ -259,7 +259,7 @@ export class NavigateCommand {
     // Single match: direct smooth jump
     if (candidates.length === 1) {
       const target = candidates[0];
-      await this.jumpToLocation(target.uri, target.selectionRange.start);
+      await this.jumpToLocation(target.uri, target.selectionRange.start, symbolName, target.containerName);
       return;
     }
 
@@ -269,16 +269,42 @@ export class NavigateCommand {
 
   /**
    * Jump to location, center view and highlight line.
+   * If symbolName is provided and document has shifted lines due to edits,
+   * automatically recalibrates to the actual current line.
    */
   private async jumpToLocation(
     uri: vscode.Uri,
-    position: vscode.Position
+    position: vscode.Position,
+    symbolName?: string,
+    containerName?: string
   ): Promise<void> {
     const doc = await vscode.workspace.openTextDocument(uri);
+    // Ensure document index is up to date if modified in buffer
+    this.indexer.ensureSynchronized(doc.uri);
+
+    let targetPos = position;
+    if (symbolName && doc.lineCount > 0) {
+      const lineIdx = position.line;
+      const currentLineText = lineIdx >= 0 && lineIdx < doc.lineCount ? doc.lineAt(lineIdx).text : '';
+      // If line at position doesn't contain symbolName (e.g. lines were added/deleted above it)
+      if (!currentLineText.includes(symbolName)) {
+        const local = this.scanLocalDocument(doc, symbolName, containerName);
+        if (local) {
+          targetPos = local.selectionRange.start;
+        } else {
+          // If not found in local document scan with container, try scanning without container restriction
+          const fallbackLocal = this.scanLocalDocument(doc, symbolName);
+          if (fallbackLocal) {
+            targetPos = fallbackLocal.selectionRange.start;
+          }
+        }
+      }
+    }
+
     const targetEditor = await vscode.window.showTextDocument(doc);
-    targetEditor.selection = new vscode.Selection(position, position);
+    targetEditor.selection = new vscode.Selection(targetPos, targetPos);
     targetEditor.revealRange(
-      new vscode.Range(position, position),
+      new vscode.Range(targetPos, targetPos),
       vscode.TextEditorRevealType.InCenter
     );
   }
@@ -317,7 +343,9 @@ export class NavigateCommand {
     if (selected) {
       await this.jumpToLocation(
         selected.definition.uri,
-        selected.definition.selectionRange.start
+        selected.definition.selectionRange.start,
+        symbolName,
+        selected.definition.containerName
       );
     }
   }

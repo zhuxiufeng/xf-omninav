@@ -2,7 +2,7 @@
   "name": "xf-omninav",
   "displayName": "XF OmniNav",
   "description": "PyCharm-style silky-smooth omni symbol navigation, class & method inheritance hierarchy, gutter markers & 1-click CodeLens.",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "publisher": "Vivian",
   "icon": "resources/icon.png",
   "repository": {
