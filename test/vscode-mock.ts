@@ -64,16 +64,25 @@ export class CodeLens {
 
 export class Uri {
   public scheme: string = 'file';
-  constructor(public fsPath: string) {
+  constructor(public fsPath: string, scheme: string = 'file') {
+    this.scheme = scheme;
     if (fsPath.startsWith('vscode-remote://')) {
       this.scheme = 'vscode-remote';
     }
   }
   static parse(val: string): Uri {
-    return new Uri(val.replace(/^file:\/\//, ''));
+    const match = val.match(/^([a-zA-Z0-9+.-]+):\/\/(.*)$/);
+    if (match) {
+      return new Uri(match[2].split('?')[0], match[1]);
+    }
+    const matchWithoutDoubleSlash = val.match(/^([a-zA-Z0-9+.-]+):(.*)$/);
+    if (matchWithoutDoubleSlash) {
+      return new Uri(matchWithoutDoubleSlash[2].split('?')[0], matchWithoutDoubleSlash[1]);
+    }
+    return new Uri(val);
   }
   static file(val: string): Uri {
-    return new Uri(val);
+    return new Uri(val, 'file');
   }
   toString(): string {
     return `${this.scheme}://${this.fsPath}`;

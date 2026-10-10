@@ -234,6 +234,9 @@ export class UsageResolver {
           if (matchedFiles.length > 0) {
             grepSucceeded = true;
             for (const filePath of matchedFiles) {
+              if (this.isVirtualOrGitUri(filePath)) {
+                continue;
+              }
               const fileUri = this.toWorkspaceUri(filePath, document.uri);
               // CRUCIAL: Exclude parent class files when at subclass definition!
               if (isSubclass && (parentUris.has(fileUri.toString()) || this.isParentPath(filePath, parentUris))) {
@@ -280,6 +283,9 @@ export class UsageResolver {
           const batch = uris.slice(i, i + batchSize);
           await Promise.all(
             batch.map(async (uri) => {
+              if (this.isVirtualOrGitUri(uri)) {
+                return;
+              }
               if (uri.toString() === document.uri.toString()) {
                 return;
               }
@@ -322,6 +328,9 @@ export class UsageResolver {
     // 3.3 Check open in-memory text documents (handles unsaved edits, test mocks, etc.)
     if (vscode.workspace.textDocuments && vscode.workspace.textDocuments.length > 0) {
       for (const openDoc of vscode.workspace.textDocuments) {
+        if (this.isVirtualOrGitUri(openDoc.uri)) {
+          continue;
+        }
         if (openDoc.uri.toString() === document.uri.toString()) {
           continue;
         }
@@ -570,6 +579,31 @@ export class UsageResolver {
     return vscode.Uri.file(filePath);
   }
 
+  /**
+   * Check if a URI or path represents a virtual or Git internal/diff file.
+   */
+  public static isVirtualOrGitUri(uri: vscode.Uri | string): boolean {
+    try {
+      const uriObj = typeof uri === 'string' ? vscode.Uri.parse(uri) : uri;
+      if (uriObj.scheme !== 'file') {
+        return true;
+      }
+      const fsPath = uriObj.fsPath.replace(/\\/g, '/');
+      if (
+        fsPath.endsWith('.git') ||
+        fsPath.includes('/.git/') ||
+        fsPath.includes('\\.git\\') ||
+        /\.git\.[^/]+$/i.test(fsPath) ||
+        /\.git$/i.test(fsPath)
+      ) {
+        return true;
+      }
+    } catch {
+      return true;
+    }
+    return false;
+  }
+
   private static async collectLocations(
     locations: vscode.Location[],
     seen: Set<string>,
@@ -584,6 +618,9 @@ export class UsageResolver {
     const escapedTarget = targetClass ? targetClass.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '';
 
     for (const ref of locations) {
+      if (this.isVirtualOrGitUri(ref.uri)) {
+        continue;
+      }
       if (
         excludedParentUris &&
         (excludedParentUris.has(ref.uri.toString()) || this.isParentPath(ref.uri.fsPath, excludedParentUris))

@@ -1138,6 +1138,14 @@ export class InheritanceAnalyzer {
 
     // 1. Open documents in workspace (fastest, unsaved edits included)
     for (const openDoc of (vscode.workspace.textDocuments || [])) {
+      if (
+        openDoc.uri.scheme !== 'file' ||
+        openDoc.uri.fsPath.endsWith('.git') ||
+        openDoc.uri.fsPath.includes('/.git/') ||
+        openDoc.uri.fsPath.includes('\\.git\\')
+      ) {
+        continue;
+      }
       if (!seenUris.has(openDoc.uri.toString()) && openDoc.languageId === document.languageId) {
         const text = openDoc.getText();
         if (classNames.some((name) => text.includes(name))) {

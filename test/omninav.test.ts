@@ -484,6 +484,37 @@ class NanoWrapper:
     assert.strictEqual(usages.some(u => u.range.start.line === 14), true, 'Callback invocation at line 14 must be found');
     assert.strictEqual(usages.length, 4, 'Must return exactly all 4 other usages');
   });
+
+  it('should filter out virtual git diff files and .git paths from findUsages', async () => {
+    const { UsageResolver } = await import('../src/resolver/usageResolver');
+    const { MockTextDocument, Uri, Position, workspace } = await import('./vscode-mock');
+
+    // Check isVirtualOrGitUri logic directly
+    assert.strictEqual(UsageResolver.isVirtualOrGitUri('git:/home/zxf/repo/box_nano_wrapper.py.git?%7B...%7D'), true);
+    assert.strictEqual(UsageResolver.isVirtualOrGitUri(Uri.file('/home/zxf/repo/box_nano_wrapper.py.git') as any), true);
+    assert.strictEqual(UsageResolver.isVirtualOrGitUri(Uri.file('/home/zxf/repo/.git/index') as any), true);
+    assert.strictEqual(UsageResolver.isVirtualOrGitUri(Uri.file('/home/zxf/repo/box_nano_wrapper.py') as any), false);
+
+    // Check findUsages ignores open virtual git documents
+    const realCode = `
+class NanoWrapper:
+    def check_filament_sensor(self):
+        self.run()
+
+    def run(self):
+        self.check_filament_sensor()
+`;
+    const realDoc = new MockTextDocument(realCode, 'file:///repo/box_nano_wrapper.py', 'python');
+    const gitVirtualDoc = new MockTextDocument(realCode, 'file:///repo/box_nano_wrapper.py.git', 'python');
+
+    workspace.textDocuments.push(realDoc, gitVirtualDoc);
+
+    const pos = new Position(2, 8); // def check_filament_sensor
+    const usages = await UsageResolver.findUsages(realDoc as any, pos, 'check_filament_sensor');
+
+    assert.ok(usages.length > 0);
+    assert.strictEqual(usages.every(u => !u.uri.fsPath.endsWith('.git')), true, 'No usage should have .git in path');
+  });
 });
 
 describe('Optimization & Raw I/O tests', () => {
