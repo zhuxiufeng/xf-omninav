@@ -1,6 +1,51 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import { TargetLocation, InheritanceMarker } from './types';
+
+let cachedRgPath: string | null | undefined = undefined;
+
+/**
+ * Locate the fastest available ripgrep binary.
+ * 1. VS Code / Antigravity IDE appRoot bundled ripgrep (always compiled with SIMD/AVX)
+ * 2. System PATH 'rg'
+ */
+export function getRipgrepPath(): string | undefined {
+  if (cachedRgPath !== undefined) {
+    return cachedRgPath || undefined;
+  }
+
+  // 1. Check VS Code / Antigravity IDE appRoot bundled ripgrep
+  try {
+    const appRoot = vscode.env?.appRoot;
+    if (appRoot) {
+      const isWin = process.platform === 'win32';
+      const rgBin = isWin ? 'rg.exe' : 'rg';
+      const candidatePaths = [
+        path.join(appRoot, 'node_modules', '@vscode', 'ripgrep', 'bin', rgBin),
+        path.join(appRoot, 'node_modules.asar.unpacked', '@vscode', 'ripgrep', 'bin', rgBin),
+        path.join(appRoot, '..', 'node_modules', '@vscode', 'ripgrep', 'bin', rgBin),
+      ];
+      for (const p of candidatePaths) {
+        if (fs.existsSync(p)) {
+          cachedRgPath = p;
+          return p;
+        }
+      }
+    }
+  } catch {}
+
+  // 2. Fall back to system PATH
+  cachedRgPath = 'rg';
+  return 'rg';
+}
+
+/**
+ * Reset ripgrep cached path if marked unavailable.
+ */
+export function markRipgrepUnavailable(): void {
+  cachedRgPath = null;
+}
 
 /**
  * Check if two arrays of inheritance markers are structurally identical.

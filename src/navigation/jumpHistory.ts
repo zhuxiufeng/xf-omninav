@@ -14,6 +14,11 @@ export class JumpHistory {
       return;
     }
 
+    // Sync with VS Code native navigation stack so Vim (Ctrl+O) and Alt+Left work seamlessly
+    try {
+      vscode.commands.executeCommand('workbench.action.pushEditorLocation');
+    } catch {}
+
     const item: NavigationHistoryItem = {
       uri: current.document.uri,
       position: current.selection.active,

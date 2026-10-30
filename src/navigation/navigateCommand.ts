@@ -515,18 +515,79 @@ export class NavigateCommand {
     position: vscode.Position,
     symbolName: string
   ): Promise<void> {
-    const usages = await UsageResolver.findUsages(document, position, symbolName, this.indexer);
-    if (usages.length === 0) {
-      vscode.window.showInformationMessage(`XF OmniJump: No call sites found for "${symbolName}".`);
+    interface UsageQuickPickItem extends vscode.QuickPickItem {
+      usage: UsageItem;
+    }
+
+    if (typeof vscode.window.createQuickPick !== 'function') {
+      const usages = await UsageResolver.findUsages(document, position, symbolName, this.indexer);
+      if (usages.length === 0) {
+        vscode.window.showInformationMessage(`XF OmniJump: No call sites found for "${symbolName}".`);
+        return;
+      }
+      if (usages.length === 1) {
+        await this.jumpToLocation(usages[0].uri, usages[0].range.start);
+        return;
+      }
+      await this.showUsagesQuickPick(symbolName, usages);
       return;
     }
 
-    if (usages.length === 1) {
-      await this.jumpToLocation(usages[0].uri, usages[0].range.start);
-      return;
-    }
+    const quickPick = vscode.window.createQuickPick<UsageQuickPickItem>();
+    quickPick.title = `Usages of "${symbolName}"`;
+    quickPick.placeholder = `Scanning for usages of "${symbolName}"...`;
+    quickPick.busy = true;
+    quickPick.matchOnDescription = true;
+    quickPick.matchOnDetail = true;
 
-    await this.showUsagesQuickPick(symbolName, usages);
+    const allItems: UsageQuickPickItem[] = [];
+    let userHasNavigated = false;
+
+    quickPick.onDidAccept(async () => {
+      userHasNavigated = true;
+      const selected = quickPick.selectedItems[0];
+      quickPick.dispose();
+      if (selected) {
+        await this.jumpToLocation(selected.usage.uri, selected.usage.range.start);
+      }
+    });
+
+    quickPick.onDidHide(() => {
+      quickPick.dispose();
+    });
+
+    quickPick.show();
+
+    await UsageResolver.findUsagesStreaming(
+      document,
+      position,
+      symbolName,
+      (batch, isDone) => {
+        if (batch.length > 0) {
+          for (const u of batch) {
+            allItems.push({
+              label: `$(references) ${u.text}`,
+              description: `${u.relativePath}:${u.range.start.line + 1}`,
+              detail: `Line ${u.range.start.line + 1}: ${u.text}`,
+              usage: u,
+            });
+          }
+          quickPick.items = allItems;
+          quickPick.placeholder = `Usages of "${symbolName}" (${allItems.length} found)`;
+        }
+        if (isDone) {
+          quickPick.busy = false;
+          if (allItems.length === 0) {
+            quickPick.dispose();
+            vscode.window.showInformationMessage(`XF OmniJump: No call sites found for "${symbolName}".`);
+          } else if (allItems.length === 1 && !userHasNavigated) {
+            quickPick.dispose();
+            this.jumpToLocation(allItems[0].usage.uri, allItems[0].usage.range.start);
+          }
+        }
+      },
+      this.indexer
+    );
   }
 
   private async showUsagesQuickPick(

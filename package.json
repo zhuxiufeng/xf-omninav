@@ -2,7 +2,7 @@
   "name": "xf-omninav",
   "displayName": "XF OmniNav",
   "description": "PyCharm-style silky-smooth omni symbol navigation, class & method inheritance hierarchy, gutter markers & 1-click CodeLens.",
-  "version": "1.0.13",
+  "version": "1.0.24",
   "publisher": "Vivian",
   "icon": "resources/icon.png",
   "repository": {
@@ -27,6 +27,7 @@
     "omnijump",
     "omnitree",
     "python",
+    "folding",
     "vim-friendly"
   ],
   "main": "./dist/extension.js",
@@ -43,7 +44,8 @@
     "onLanguage:java",
     "onLanguage:csharp",
     "onLanguage:go",
-    "onLanguage:php"
+    "onLanguage:php",
+    "onLanguage:shellscript"
   ],
   "contributes": {
     "commands": [
@@ -78,6 +80,11 @@
         "category": "XF OmniNav"
       },
       {
+        "command": "xfOmniNav.refreshFoldings",
+        "title": "Refresh Fine-Grained Branch Foldings",
+        "category": "XF OmniNav"
+      },
+      {
         "command": "xfOmniNav.toggleGutterPosition",
         "title": "Switch Arrow Position (Inline / Gutter / Off)",
         "category": "XF OmniNav"
@@ -89,6 +96,11 @@
       {
         "command": "xfOmniNav.showTargetsQuickPick",
         "title": "XF OmniNav: Show Navigation Targets"
+      },
+      {
+        "command": "xfOmniNav.exportClassHierarchyMermaid",
+        "title": "XF OmniNav: Export Class Hierarchy to Mermaid Diagram",
+        "category": "XF OmniNav"
       }
     ],
     "menus": {
@@ -106,6 +118,11 @@
         {
           "command": "xfOmniNav.jumpToChild",
           "group": "navigation@3",
+          "when": "editorTextFocus"
+        },
+        {
+          "command": "xfOmniNav.exportClassHierarchyMermaid",
+          "group": "navigation@4",
           "when": "editorTextFocus"
         }
       ]
@@ -168,6 +185,11 @@
           ],
           "default": "inline",
           "description": "Position of arrow indicators: 'inline' renders right next to code (leaves breakpoint margin clean), 'glyphMargin' renders in the leftmost margin."
+        },
+        "xfOmniNav.enableFineGrainedFolding": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable PyCharm-style independent branch folding across Python, Shell, C/C++, TypeScript, JavaScript, Java, Go, and Rust (if/elif/else, try/except/finally, #if/#elif/#else, switch/case, select/case, match arms)."
         },
         "xfOmniNav.fallbackOnLspFailure": {
           "type": "boolean",

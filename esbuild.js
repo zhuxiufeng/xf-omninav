@@ -6,14 +6,17 @@ const isProduction = args.includes('--production');
 
 async function main() {
   const ctx = await esbuild.context({
-    entryPoints: ['src/extension.ts'],
+    entryPoints: {
+      extension: 'src/extension.ts',
+      parseWorker: 'src/indexer/parseWorker.ts',
+    },
     bundle: true,
     format: 'cjs',
     minify: isProduction,
     sourcemap: !isProduction,
     sourcesContent: false,
     platform: 'node',
-    outfile: 'dist/extension.js',
+    outdir: 'dist',
     external: ['vscode'],
     logLevel: 'info',
   });

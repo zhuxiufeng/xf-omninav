@@ -1,16 +1,21 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import * as fs from 'fs';
-import { SymbolDefinition } from '../types';
+import { SymbolDefinition, CompactSymbolDefinition } from '../types';
 import { SymbolParser } from './symbolParser';
 import { getOmniConfig } from '../utils';
+import { WorkerPool } from './workerPool';
 
 export class SymbolIndexer implements vscode.Disposable {
   private exactMap: Map<string, SymbolDefinition[]> = new Map();
   private lowerMap: Map<string, SymbolDefinition[]> = new Map();
+  private acronymMap: Map<string, SymbolDefinition[]> = new Map();
+  private prefixMap: Map<string, SymbolDefinition[]> = new Map();
   private fileMap: Map<string, SymbolDefinition[]> = new Map();
   private classHierarchy: Map<string, string[]> = new Map();
   private classMethods: Map<string, Set<string>> = new Map();
   private fileClassesMap: Map<string, string[]> = new Map();
+  private fileMtimeMap: Map<string, number> = new Map();
 
   private disposables: vscode.Disposable[] = [];
   private isIndexing: boolean = false;
@@ -19,9 +24,46 @@ export class SymbolIndexer implements vscode.Disposable {
 
   private pendingChanges: Map<string, NodeJS.Timeout> = new Map();
   private dirtyDocuments: Map<string, vscode.TextDocument> = new Map();
+  private workerPool: WorkerPool;
+  private context?: vscode.ExtensionContext;
 
-  constructor() {
+  constructor(context?: vscode.ExtensionContext) {
+    this.context = context;
+    this.workerPool = new WorkerPool();
     this.registerWatchers();
+  }
+
+  public setContext(context: vscode.ExtensionContext): void {
+    this.context = context;
+  }
+
+  /**
+   * Extract acronym / abbreviation from symbol name.
+   * e.g. "box_filament_err" -> "bfe"
+   * e.g. "BoxFilamentError" -> "bfe"
+   * e.g. "get_flush_velocity" -> "gfv"
+   */
+  public static extractAcronym(name: string): string {
+    if (!name || name.length <= 1) return '';
+    // 1. snake_case / kebab-case: box_filament_err -> bfe
+    if (name.includes('_') || name.includes('-')) {
+      const parts = name.split(/[_-]+/).filter(Boolean);
+      if (parts.length > 1) {
+        return parts.map((p) => p[0].toLowerCase()).join('');
+      }
+    }
+    // 2. CamelCase / PascalCase: BoxFilamentError -> bfe
+    const letters: string[] = [];
+    for (let i = 0; i < name.length; i++) {
+      const code = name.charCodeAt(i);
+      if (i === 0 || (code >= 65 && code <= 90)) {
+        letters.push(name[i].toLowerCase());
+      }
+    }
+    if (letters.length > 1) {
+      return letters.join('');
+    }
+    return '';
   }
 
   /**
@@ -86,30 +128,72 @@ export class SymbolIndexer implements vscode.Disposable {
     this.isIndexing = true;
 
     try {
-      this.clear();
+      // 0. If in-memory index is empty, attempt 5ms instant hydration from persistent disk cache
+      if (this.fileMap.size === 0) {
+        await this.loadFromDiskCache();
+      }
+
       const maxFiles = getOmniConfig<number>('maxIndexedFiles', 5000);
 
       // Search for code files across project
       const pattern = '**/*.{py,ts,js,tsx,jsx,go,rs,cpp,c,h,hpp,java}';
       const exclude =
-        '{**/node_modules/**,**/.git/**,**/__pycache__/**,**/dist/**,**/build/**,**/.venv/**,**/venv/**,**/env/**,**/.tox/**}';
+        '{**/node_modules/**,**/.git/**,**/__pycache__/**,**/dist/**,**/build/**,**/.venv/**,**/venv/**,**/env/**,**/.tox/**,**/target/**,**/.cache/**,**/coverage/**,**/out/**}';
 
       const uris = await vscode.workspace.findFiles(pattern, exclude, maxFiles);
+      const currentUriSet = new Set(uris.map((u) => u.toString()));
 
-      // Process files in concurrent batches of 25 without opening VS Code text documents
+      // Clean up symbols for files that were deleted outside watcher
+      for (const uriStr of Array.from(this.fileMap.keys())) {
+        if (!currentUriSet.has(uriStr)) {
+          this.removeFileSymbols(uriStr);
+        }
+      }
+
+      // Prioritize active editor document and sibling files in same folder first
+      const activeUri = vscode.window.activeTextEditor?.document?.uri;
+      if (activeUri && activeUri.scheme === 'file') {
+        const activeDir = path.dirname(activeUri.fsPath);
+        uris.sort((a, b) => {
+          if (a.toString() === activeUri.toString()) return -1;
+          if (b.toString() === activeUri.toString()) return 1;
+          const aInDir = a.fsPath.startsWith(activeDir);
+          const bInDir = b.fsPath.startsWith(activeDir);
+          if (aInDir && !bInDir) return -1;
+          if (!aInDir && bInDir) return 1;
+          return 0;
+        });
+      }
+
+      // Process files in concurrent batches with micro-yielding to keep event loop 100% responsive
       const batchSize = 25;
       for (let i = 0; i < uris.length; i += batchSize) {
         const batch = uris.slice(i, i + batchSize);
         await Promise.all(
           batch.map(async (uri) => {
             try {
+              const uriStr = uri.toString();
+
               // If already open in an editor, use in-memory document
               const openDoc = vscode.workspace.textDocuments?.find(
-                (d) => d.uri.toString() === uri.toString()
+                (d) => d.uri.toString() === uriStr
               );
               if (openDoc) {
                 this.indexDocument(openDoc);
                 return;
+              }
+
+              // Incremental check: If local file mtime is unchanged and symbols are already cached, skip!
+              let mtime: number | undefined;
+              if (uri.scheme === 'file') {
+                try {
+                  const stat = await fs.promises.stat(uri.fsPath);
+                  mtime = stat.mtimeMs;
+                  const prevMtime = this.fileMtimeMap.get(uriStr);
+                  if (prevMtime !== undefined && prevMtime === mtime && this.fileMap.has(uriStr)) {
+                    return; // 0ms skipped!
+                  }
+                } catch {}
               }
 
               // Fast raw read bypassing VS Code TextDocument allocation & event storms
@@ -120,15 +204,34 @@ export class SymbolIndexer implements vscode.Disposable {
                 const raw = await vscode.workspace.fs.readFile(uri);
                 text = Buffer.from(raw).toString('utf8');
               }
-              this.indexFile(uri, text);
+
+              const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
+              const workspaceRoot = workspaceFolder ? workspaceFolder.uri.fsPath : undefined;
+
+              let defs: SymbolDefinition[] | undefined;
+              if (this.workerPool.available) {
+                try {
+                  defs = await this.workerPool.parseText(uriStr, text, workspaceRoot);
+                } catch {}
+              }
+
+              this.indexFile(uri, text, defs);
+              if (mtime !== undefined) {
+                this.fileMtimeMap.set(uriStr, mtime);
+              }
             } catch {
               // File unreadable or binary, skip silently
             }
           })
         );
+        // Micro-yield to Node.js event loop between batches to eliminate startup UI jank
+        await new Promise((resolve) => setTimeout(resolve, 5));
       }
 
       this._onDidIndexUpdate.fire(this.totalSymbols);
+
+      // Persist symbol cache asynchronously to disk
+      await this.saveToDiskCache();
     } finally {
       this.isIndexing = false;
     }
@@ -137,14 +240,19 @@ export class SymbolIndexer implements vscode.Disposable {
   /**
    * Index symbols from raw text without requiring vscode.TextDocument.
    */
-  public indexFile(uri: vscode.Uri, text: string): void {
+  public indexFile(
+    uri: vscode.Uri,
+    text: string,
+    preParsedDefs?: SymbolDefinition[]
+  ): void {
     const uriStr = uri.toString();
     this.removeFileSymbols(uriStr);
 
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
     const workspaceRoot = workspaceFolder ? workspaceFolder.uri.fsPath : undefined;
 
-    const defs = SymbolParser.parseText(text, uri, undefined, workspaceRoot);
+    const defs =
+      preParsedDefs || SymbolParser.parseText(text, uri, undefined, workspaceRoot);
     this.fileMap.set(uriStr, defs);
     if (defs.length === 0) {
       return;
@@ -191,7 +299,29 @@ export class SymbolIndexer implements vscode.Disposable {
       lowerList.push(def);
       this.lowerMap.set(lowerName, lowerList);
 
-      // 3. Track class hierarchy and class methods
+      // 3. Add to acronym map
+      const acronym = SymbolIndexer.extractAcronym(def.name);
+      if (acronym) {
+        const acList = this.acronymMap.get(acronym) || [];
+        acList.push(def);
+        this.acronymMap.set(acronym, acList);
+      }
+
+      // 4. Add to prefix map
+      if (lowerName.length >= 2) {
+        const p2 = lowerName.slice(0, 2);
+        const p2List = this.prefixMap.get(p2) || [];
+        p2List.push(def);
+        this.prefixMap.set(p2, p2List);
+      }
+      if (lowerName.length >= 3) {
+        const p3 = lowerName.slice(0, 3);
+        const p3List = this.prefixMap.get(p3) || [];
+        p3List.push(def);
+        this.prefixMap.set(p3, p3List);
+      }
+
+      // 5. Track class hierarchy and class methods
       if (def.kind === 'class') {
         fileClasses.push(def.name);
         if (def.parentContainers && def.parentContainers.length > 0) {
@@ -216,6 +346,7 @@ export class SymbolIndexer implements vscode.Disposable {
    * Remove symbols belonging to a specific file URI.
    */
   public removeFileSymbols(uriStr: string): void {
+    this.fileMtimeMap.delete(uriStr);
     const existing = this.fileMap.get(uriStr);
     if (!existing) {
       return;
@@ -242,6 +373,40 @@ export class SymbolIndexer implements vscode.Disposable {
           this.lowerMap.delete(lowerName);
         } else {
           this.lowerMap.set(lowerName, filtered);
+        }
+      }
+
+      // Remove from acronym map
+      const acronym = SymbolIndexer.extractAcronym(def.name);
+      if (acronym) {
+        const acList = this.acronymMap.get(acronym);
+        if (acList) {
+          const filtered = acList.filter((d) => d.uri.toString() !== uriStr);
+          if (filtered.length === 0) {
+            this.acronymMap.delete(acronym);
+          } else {
+            this.acronymMap.set(acronym, filtered);
+          }
+        }
+      }
+
+      // Remove from prefix map
+      if (lowerName.length >= 2) {
+        const p2 = lowerName.slice(0, 2);
+        const p2List = this.prefixMap.get(p2);
+        if (p2List) {
+          const filtered = p2List.filter((d) => d.uri.toString() !== uriStr);
+          if (filtered.length === 0) this.prefixMap.delete(p2);
+          else this.prefixMap.set(p2, filtered);
+        }
+      }
+      if (lowerName.length >= 3) {
+        const p3 = lowerName.slice(0, 3);
+        const p3List = this.prefixMap.get(p3);
+        if (p3List) {
+          const filtered = p3List.filter((d) => d.uri.toString() !== uriStr);
+          if (filtered.length === 0) this.prefixMap.delete(p3);
+          else this.prefixMap.set(p3, filtered);
         }
       }
     }
@@ -435,24 +600,49 @@ export class SymbolIndexer implements vscode.Disposable {
   }
 
   /**
-   * Find definitions by fuzzy / case-insensitive name.
+   * Find definitions by fuzzy / case-insensitive name, acronym, or prefix.
    */
   public findFuzzy(name: string): SymbolDefinition[] {
-    const lower = name.toLowerCase();
+    const query = name.trim();
+    if (!query) return [];
+    const lower = query.toLowerCase();
     const results: SymbolDefinition[] = [];
+    const seen = new Set<SymbolDefinition>();
 
-    // Exact matches first
+    const add = (item: SymbolDefinition) => {
+      if (!seen.has(item)) {
+        seen.add(item);
+        results.push(item);
+      }
+    };
+
+    // 1. Exact matches first
     const exact = this.exactMap.get(name);
     if (exact) {
-      results.push(...exact);
+      for (const d of exact) add(d);
     }
 
-    // Case-insensitive matches
+    // 2. Case-insensitive matches
     const lowerList = this.lowerMap.get(lower);
     if (lowerList) {
-      for (const item of lowerList) {
-        if (!results.includes(item)) {
-          results.push(item);
+      for (const item of lowerList) add(item);
+    }
+
+    // 3. Acronym / CamelCase abbreviation matches (e.g. "bfe" -> "box_filament_err", "BoxFilamentError")
+    const acList = this.acronymMap.get(lower);
+    if (acList) {
+      for (const item of acList) add(item);
+    }
+
+    // 4. Prefix matches via prefix map
+    if (lower.length >= 2) {
+      const pKey = lower.slice(0, Math.min(3, lower.length));
+      const pList = this.prefixMap.get(pKey);
+      if (pList) {
+        for (const item of pList) {
+          if (item.name.toLowerCase().startsWith(lower)) {
+            add(item);
+          }
         }
       }
     }
@@ -466,10 +656,171 @@ export class SymbolIndexer implements vscode.Disposable {
   public clear(): void {
     this.exactMap.clear();
     this.lowerMap.clear();
+    this.acronymMap.clear();
+    this.prefixMap.clear();
     this.fileMap.clear();
     this.classHierarchy.clear();
     this.classMethods.clear();
     this.fileClassesMap.clear();
+    this.fileMtimeMap.clear();
+  }
+
+  /**
+   * Get methods declared on a class.
+   */
+  public getClassMethods(className: string): string[] {
+    const methods = this.classMethods.get(className);
+    return methods ? Array.from(methods) : [];
+  }
+
+  /**
+   * Get all indexed class names.
+   */
+  public getAllClassNames(): string[] {
+    const set = new Set<string>();
+    for (const cls of this.classHierarchy.keys()) {
+      set.add(cls);
+    }
+    for (const classes of this.fileClassesMap.values()) {
+      for (const c of classes) set.add(c);
+    }
+    return Array.from(set);
+  }
+
+  /**
+   * Get class hierarchy map clone.
+   */
+  public getClassHierarchyMap(): Map<string, string[]> {
+    return new Map(this.classHierarchy);
+  }
+
+  /**
+   * Resolve cache file path on disk.
+   */
+  public getCacheFilePath(customPath?: string): string | undefined {
+    if (customPath) {
+      return customPath;
+    }
+    if (this.context?.storageUri?.fsPath) {
+      return path.join(this.context.storageUri.fsPath, 'omninav_symbols.cache.json');
+    }
+    const folders = vscode.workspace.workspaceFolders;
+    if (folders && folders.length > 0 && folders[0].uri.scheme === 'file') {
+      return path.join(folders[0].uri.fsPath, '.omninav_cache.json');
+    }
+    if (this.context?.globalStorageUri?.fsPath) {
+      return path.join(this.context.globalStorageUri.fsPath, 'omninav_symbols.cache.json');
+    }
+    return undefined;
+  }
+
+  /**
+   * Load symbol index from persistent disk cache.
+   */
+  public async loadFromDiskCache(customPath?: string): Promise<boolean> {
+    try {
+      const cachePath = this.getCacheFilePath(customPath);
+      if (!cachePath || !fs.existsSync(cachePath)) {
+        return false;
+      }
+
+      const raw = await fs.promises.readFile(cachePath, 'utf8');
+      const data = JSON.parse(raw);
+      if (!data || data.version !== 1 || !Array.isArray(data.files)) {
+        return false;
+      }
+
+      this.clear();
+
+      if (Array.isArray(data.fileMtimeMap)) {
+        for (const [uriStr, mtime] of data.fileMtimeMap) {
+          this.fileMtimeMap.set(uriStr, mtime);
+        }
+      }
+
+      for (const [uriStr, serializedDefs] of data.files) {
+        const uri = vscode.Uri.parse(uriStr);
+        const defs: SymbolDefinition[] = serializedDefs.map(
+          (d: any) =>
+            new CompactSymbolDefinition({
+              name: d.n,
+              kind: d.k,
+              uri,
+              range: d.r,
+              selectionRange: d.sr,
+              signature: d.s,
+              fileRelativePath: d.rel,
+              containerName: d.c,
+              parentContainers: d.p,
+              docstring: d.doc,
+              isExported: d.exp,
+            })
+        );
+        this.storeDefinitions(uriStr, defs);
+      }
+
+      this._onDidIndexUpdate.fire(this.totalSymbols);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Save symbol index to persistent disk cache.
+   */
+  public async saveToDiskCache(customPath?: string): Promise<boolean> {
+    try {
+      const cachePath = this.getCacheFilePath(customPath);
+      if (!cachePath) {
+        return false;
+      }
+
+      const dir = path.dirname(cachePath);
+      if (!fs.existsSync(dir)) {
+        await fs.promises.mkdir(dir, { recursive: true });
+      }
+
+      const serializedFiles: [string, any[]][] = [];
+      for (const [uriStr, defs] of this.fileMap.entries()) {
+        const fileDefs = defs.map((d: any) => ({
+          n: d.name,
+          k: d.kind,
+          c: d.containerName,
+          p: d.parentContainers,
+          r: d._r || [
+            d.range.start.line,
+            d.range.start.character,
+            d.range.end.line,
+            d.range.end.character,
+          ],
+          sr: d._sr || [
+            d.selectionRange.start.line,
+            d.selectionRange.start.character,
+            d.selectionRange.end.line,
+            d.selectionRange.end.character,
+          ],
+          s: d.signature,
+          rel: d.fileRelativePath,
+          exp: d.isExported,
+          doc: d.docstring,
+        }));
+        serializedFiles.push([uriStr, fileDefs]);
+      }
+
+      const data = {
+        version: 1,
+        fileMtimeMap: Array.from(this.fileMtimeMap.entries()),
+        files: serializedFiles,
+      };
+
+      const tmpPath = `${cachePath}.${Date.now()}.tmp`;
+      await fs.promises.writeFile(tmpPath, JSON.stringify(data), 'utf8');
+      await fs.promises.rename(tmpPath, cachePath);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -509,7 +860,7 @@ export class SymbolIndexer implements vscode.Disposable {
 
     // 3. File system events
     const watcher = vscode.workspace.createFileSystemWatcher(
-      '**/*.{py,ts,js,tsx,jsx,go,rs}'
+      '**/*.{py,ts,js,tsx,jsx,go,rs,cpp,c,h,hpp,java}'
     );
     this.disposables.push(watcher);
 
@@ -534,6 +885,7 @@ export class SymbolIndexer implements vscode.Disposable {
   }
 
   public dispose(): void {
+    this.workerPool.dispose();
     for (const timer of this.pendingChanges.values()) {
       clearTimeout(timer);
     }

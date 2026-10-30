@@ -26,6 +26,98 @@ export interface SymbolDefinition {
   isExported?: boolean;
 }
 
+/**
+ * High-performance lightweight flyweight implementation of SymbolDefinition.
+ * Stores range coordinates as primitive number tuples to avoid allocating
+ * thousands of vscode.Position & vscode.Range objects during workspace indexing.
+ */
+export class CompactSymbolDefinition implements SymbolDefinition {
+  public readonly name: string;
+  public readonly kind: SymbolKind;
+  public readonly containerName?: string;
+  public readonly parentContainers?: string[];
+  public readonly uri: vscode.Uri;
+  public readonly signature: string;
+  public readonly docstring?: string;
+  public readonly fileRelativePath: string;
+  public readonly isExported?: boolean;
+
+  private readonly _r: [number, number, number, number];
+  private readonly _sr: [number, number, number, number];
+  private _rangeObj?: vscode.Range;
+  private _selRangeObj?: vscode.Range;
+
+  constructor(options: {
+    name: string;
+    kind: SymbolKind;
+    uri: vscode.Uri;
+    range: vscode.Range | [number, number, number, number];
+    selectionRange: vscode.Range | [number, number, number, number];
+    signature: string;
+    fileRelativePath: string;
+    containerName?: string;
+    parentContainers?: string[];
+    docstring?: string;
+    isExported?: boolean;
+  }) {
+    this.name = options.name;
+    this.kind = options.kind;
+    this.uri = options.uri;
+    this._r = Array.isArray(options.range)
+      ? options.range
+      : [
+          options.range.start.line,
+          options.range.start.character,
+          options.range.end.line,
+          options.range.end.character,
+        ];
+    this._sr = Array.isArray(options.selectionRange)
+      ? options.selectionRange
+      : [
+          options.selectionRange.start.line,
+          options.selectionRange.start.character,
+          options.selectionRange.end.line,
+          options.selectionRange.end.character,
+        ];
+    this.signature = options.signature;
+    this.fileRelativePath = options.fileRelativePath;
+    this.containerName = options.containerName;
+    this.parentContainers = options.parentContainers;
+    this.docstring = options.docstring;
+    this.isExported = options.isExported;
+  }
+
+  get range(): vscode.Range {
+    if (!this._rangeObj) {
+      this._rangeObj = new vscode.Range(this._r[0], this._r[1], this._r[2], this._r[3]);
+    }
+    return this._rangeObj;
+  }
+
+  set range(r: vscode.Range) {
+    this._rangeObj = r;
+    this._r[0] = r.start.line;
+    this._r[1] = r.start.character;
+    this._r[2] = r.end.line;
+    this._r[3] = r.end.character;
+  }
+
+  get selectionRange(): vscode.Range {
+    if (!this._selRangeObj) {
+      this._selRangeObj = new vscode.Range(this._sr[0], this._sr[1], this._sr[2], this._sr[3]);
+    }
+    return this._selRangeObj;
+  }
+
+  set selectionRange(r: vscode.Range) {
+    this._selRangeObj = r;
+    this._sr[0] = r.start.line;
+    this._sr[1] = r.start.character;
+    this._sr[2] = r.end.line;
+    this._sr[3] = r.end.character;
+  }
+}
+
 export interface JumpTarget {
   definition: SymbolDefinition;
   score: number;

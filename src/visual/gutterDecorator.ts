@@ -13,6 +13,7 @@ export class InheritanceDecorator implements vscode.Disposable {
 
   // Track editors that already have current decorations applied to prevent re-render flicker
   private appliedEditors = new WeakSet<vscode.TextEditor>();
+  private viewportThrottleTimer: NodeJS.Timeout | null = null;
 
   constructor(private context: vscode.ExtensionContext) {
     this.createDecorationTypes();
@@ -123,13 +124,17 @@ export class InheritanceDecorator implements vscode.Disposable {
     const uriStr = editor.document.uri.toString();
     const existing = this.activeMarkers.get(uriStr);
 
+    const isLargeFile = editor.document.lineCount > 1000;
+
     // If active markers already match and were already set on this editor, skip to avoid flicker
-    if (existing && this.appliedEditors.has(editor) && areMarkersEqual(existing, markers)) {
+    if (!isLargeFile && existing && this.appliedEditors.has(editor) && areMarkersEqual(existing, markers)) {
       return;
     }
 
     this.activeMarkers.set(uriStr, markers);
-    this.appliedEditors.add(editor);
+    if (!isLargeFile) {
+      this.appliedEditors.add(editor);
+    }
 
     const enableGutterIcons = getTreeConfig<boolean>('enableGutterIcons', true);
     const gutterPosition = getTreeConfig<'inline' | 'glyphMargin' | 'both'>('gutterPosition', 'glyphMargin');
@@ -139,6 +144,21 @@ export class InheritanceDecorator implements vscode.Disposable {
       editor.setDecorations(this.downDecorationType, []);
       editor.setDecorations(this.upDownDecorationType, []);
       return;
+    }
+
+    // Viewport Culling: For files (> 1000 lines), only render decorations
+    // within visible ranges + 150 line buffer to keep editor scrolling at 60fps
+    let minLine = 0;
+    let maxLine = Number.MAX_SAFE_INTEGER;
+    if (isLargeFile && editor.visibleRanges && editor.visibleRanges.length > 0) {
+      let vMin = editor.visibleRanges[0].start.line;
+      let vMax = editor.visibleRanges[0].end.line;
+      for (let i = 1; i < editor.visibleRanges.length; i++) {
+        if (editor.visibleRanges[i].start.line < vMin) vMin = editor.visibleRanges[i].start.line;
+        if (editor.visibleRanges[i].end.line > vMax) vMax = editor.visibleRanges[i].end.line;
+      }
+      minLine = Math.max(0, vMin - 150);
+      maxLine = vMax + 150;
     }
 
     // Get active breakpoint lines to avoid colliding with user breakpoints in glyphMargin mode
@@ -159,15 +179,21 @@ export class InheritanceDecorator implements vscode.Disposable {
 
     for (const marker of markers) {
       const lineNum = marker.selectionRange.start.line;
+      // Skip out-of-viewport markers on large files
+      if (lineNum < minLine || lineNum > maxLine) {
+        continue;
+      }
+
       // In glyphMargin mode, if user has set a breakpoint on this line, yield to the breakpoint
       if (gutterPosition === 'glyphMargin' && breakpointLines.has(lineNum)) {
         continue;
       }
 
+      // Fast zero-allocation range for glyph margin (no lineAt() TextLine allocation)
       const targetRange =
         gutterPosition === 'inline'
           ? new vscode.Range(marker.selectionRange.start, marker.selectionRange.start)
-          : editor.document.lineAt(lineNum).range;
+          : new vscode.Range(lineNum, 0, lineNum, 0);
 
       const hoverMessage = this.buildHoverMessage(marker);
       const decorationOption: vscode.DecorationOptions = {
@@ -187,6 +213,26 @@ export class InheritanceDecorator implements vscode.Disposable {
     editor.setDecorations(this.upDecorationType, upOptions);
     editor.setDecorations(this.downDecorationType, downOptions);
     editor.setDecorations(this.upDownDecorationType, upDownOptions);
+  }
+
+  /**
+   * Update viewport decorations when user scrolls in a large file (> 1000 lines).
+   * Throttled to keep scrolling at 60 FPS without layout thrashing.
+   */
+  public updateViewportDecorations(editor: vscode.TextEditor): void {
+    if (!editor.document || editor.document.lineCount <= 1000) {
+      return;
+    }
+    if (this.viewportThrottleTimer) {
+      clearTimeout(this.viewportThrottleTimer);
+    }
+    this.viewportThrottleTimer = setTimeout(() => {
+      this.viewportThrottleTimer = null;
+      const markers = this.activeMarkers.get(editor.document.uri.toString());
+      if (markers && markers.length > 0) {
+        this.applyDecorations(editor, markers);
+      }
+    }, 40);
   }
 
   /**
@@ -226,6 +272,10 @@ export class InheritanceDecorator implements vscode.Disposable {
    * Build markdown hover message with clickable navigation links.
    */
   private buildHoverMessage(marker: InheritanceMarker): vscode.MarkdownString {
+    if ((marker as any)._cachedHover) {
+      return (marker as any)._cachedHover;
+    }
+
     const md = new vscode.MarkdownString();
     md.isTrusted = true;
     md.supportThemeIcons = true;
@@ -261,6 +311,7 @@ export class InheritanceDecorator implements vscode.Disposable {
     }
 
     md.appendMarkdown(`\n---\n*💡 Click any link above or press \`Ctrl+U\` / \`Ctrl+Alt+B\` to jump.*`);
+    (marker as any)._cachedHover = md;
     return md;
   }
 

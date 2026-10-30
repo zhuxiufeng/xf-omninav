@@ -13,14 +13,30 @@ import { NavigateCommand } from './navigation/navigateCommand';
 import { globalHistory } from './navigation/jumpHistory';
 import { debounce, getOmniConfig, isOmniConfigAffected } from './utils';
 import { InheritanceMarker } from './types';
+import { PythonBranchFoldingProvider } from './folding/pythonFoldingProvider';
+import { ShellBranchFoldingProvider } from './folding/shellFoldingProvider';
+import { CppMacroFoldingProvider } from './folding/cppMacroFoldingProvider';
+import { SwitchCaseFoldingProvider } from './folding/switchCaseFoldingProvider';
+import { RustBranchFoldingProvider } from './folding/rustFoldingProvider';
+import { FoldingCache } from './folding/foldingCache';
+import { MermaidHierarchyExporter } from './visual/mermaidExporter';
 
 export function activate(context: vscode.ExtensionContext) {
   const outputChannel = vscode.window.createOutputChannel('XF OmniNav');
   outputChannel.appendLine('[XF OmniNav] Activating unified navigation suite...');
 
   // 1. Core Engines
-  const indexer = new SymbolIndexer();
+  const indexer = new SymbolIndexer(context);
   context.subscriptions.push(indexer);
+
+  // Instant cold-boot cache hydration (~5ms)
+  indexer.loadFromDiskCache().then((loaded) => {
+    if (loaded) {
+      outputChannel.appendLine(
+        `[XF OmniNav] Restored ${indexer.totalSymbols} symbols across ${indexer.totalFiles} files from persistent disk cache.`
+      );
+    }
+  });
 
   const analyzer = new InheritanceAnalyzer();
   const decorator = new InheritanceDecorator(context);
@@ -64,6 +80,108 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.languages.registerInlayHintsProvider(documentSelector, inlayHintsProvider)
   );
 
+  // 3. Fine-grained branch folding providers (Python, Shell, C/C++, TS/JS/Java/Go, Rust)
+  let foldingDisposables: vscode.Disposable[] = [];
+  const pythonFoldingProvider = new PythonBranchFoldingProvider();
+  const shellFoldingProvider = new ShellBranchFoldingProvider();
+  const cppFoldingProvider = new CppMacroFoldingProvider();
+  const switchCaseFoldingProvider = new SwitchCaseFoldingProvider();
+  const rustFoldingProvider = new RustBranchFoldingProvider();
+
+  const syncFoldingProviders = (forceReRegister = false) => {
+    const isFoldingEnabled = getOmniConfig<boolean>(
+      'enableFineGrainedFolding',
+      true
+    );
+    if (isFoldingEnabled) {
+      if (forceReRegister && foldingDisposables.length > 0) {
+        foldingDisposables.forEach((d) => d.dispose());
+        foldingDisposables = [];
+      }
+      if (foldingDisposables.length === 0) {
+        // Python fine-grained branch folding (PyCharm style)
+        foldingDisposables.push(
+          vscode.languages.registerFoldingRangeProvider(
+            { language: 'python' },
+            pythonFoldingProvider
+          )
+        );
+        // Shell / Bash
+        foldingDisposables.push(
+          vscode.languages.registerFoldingRangeProvider(
+            { language: 'shellscript' },
+            shellFoldingProvider
+          )
+        );
+        // C / C++ preprocessor macro conditionals
+        foldingDisposables.push(
+          vscode.languages.registerFoldingRangeProvider(
+            { language: 'c' },
+            cppFoldingProvider
+          ),
+          vscode.languages.registerFoldingRangeProvider(
+            { language: 'cpp' },
+            cppFoldingProvider
+          )
+        );
+        // TypeScript, JavaScript, Java, Go switch/case & select/case
+        const switchCaseLanguages = [
+          'typescript',
+          'javascript',
+          'typescriptreact',
+          'javascriptreact',
+          'java',
+          'go',
+        ];
+        for (const lang of switchCaseLanguages) {
+          foldingDisposables.push(
+            vscode.languages.registerFoldingRangeProvider(
+              [
+                { language: lang, scheme: 'file' },
+                { language: lang, scheme: 'untitled' },
+              ],
+              switchCaseFoldingProvider
+            )
+          );
+        }
+        // Rust match arms, derive attributes, and doc comments
+        foldingDisposables.push(
+          vscode.languages.registerFoldingRangeProvider(
+            { language: 'rust' },
+            rustFoldingProvider
+          )
+        );
+        foldingDisposables.forEach((d) => context.subscriptions.push(d));
+      }
+      pythonFoldingProvider.fireDidChange();
+      shellFoldingProvider.fireDidChange();
+      cppFoldingProvider.fireDidChange();
+      switchCaseFoldingProvider.fireDidChange();
+      rustFoldingProvider.fireDidChange();
+    } else if (!isFoldingEnabled && foldingDisposables.length > 0) {
+      foldingDisposables.forEach((d) => d.dispose());
+      foldingDisposables = [];
+    }
+  };
+
+  syncFoldingProviders();
+
+  // Leapfrog deferred language servers (e.g. Pyrefly, Pyright, clangd) so our providers hold top rank
+  setTimeout(() => syncFoldingProviders(true), 1500);
+  setTimeout(() => syncFoldingProviders(true), 4000);
+  setTimeout(() => syncFoldingProviders(true), 8000);
+
+  let hasReSyncedForPython = false;
+  context.subscriptions.push(
+    vscode.workspace.onDidOpenTextDocument((doc) => {
+      if (doc.languageId === 'python' && !hasReSyncedForPython) {
+        hasReSyncedForPython = true;
+        setTimeout(() => syncFoldingProviders(true), 2500);
+        setTimeout(() => syncFoldingProviders(true), 6000);
+      }
+    })
+  );
+
   // 3. Command registration helper (multi-namespace backward compatibility)
   const registerMulti = (
     baseName: string,
@@ -101,6 +219,10 @@ export function activate(context: vscode.ExtensionContext) {
   registerMulti('navigateBack', onNavigateBack);
   registerMulti('rebuildIndex', onRebuild);
   registerMulti('findImplementations', onNavigate);
+  registerMulti('refreshFoldings', () => syncFoldingProviders(true));
+  registerMulti('exportClassHierarchyMermaid', async (className?: string) => {
+    await MermaidHierarchyExporter.exportClassHierarchy(indexer, className);
+  });
 
   // Inheritance Commands
   registerMulti('jumpToLocation', async (target: any) => {
@@ -357,6 +479,17 @@ export function activate(context: vscode.ExtensionContext) {
         if (analyzedDocVersions.get(uriStr) !== editor.document.version) {
           triggerAnalysis(editor, false, true);
         }
+
+        const lang = editor.document.languageId;
+        if (lang === 'python') {
+          pythonFoldingProvider.fireDidChange();
+        } else if (lang === 'shellscript') {
+          shellFoldingProvider.fireDidChange();
+        } else if (lang === 'c' || lang === 'cpp') {
+          cppFoldingProvider.fireDidChange();
+        } else if (lang === 'rust') {
+          rustFoldingProvider.fireDidChange();
+        }
       } else {
         inheritanceStatusBar.hide();
       }
@@ -365,6 +498,12 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.window.onDidChangeTextEditorSelection((event) => {
       updateInheritanceStatusBar(event.textEditor);
     }),
+
+    vscode.window.onDidChangeTextEditorVisibleRanges
+      ? vscode.window.onDidChangeTextEditorVisibleRanges((event) => {
+          decorator.updateViewportDecorations(event.textEditor);
+        })
+      : { dispose: () => {} },
 
     vscode.workspace.onDidChangeTextDocument((event) => {
       const uriStr = event.document.uri.toString();
@@ -393,14 +532,17 @@ export function activate(context: vscode.ExtensionContext) {
 
     vscode.workspace.onDidCloseTextDocument((document) => {
       const uriStr = document.uri.toString();
+      FoldingCache.delete(uriStr);
       analyzedDocVersions.delete(uriStr);
       retriedDocs.delete(uriStr);
       codeLensProvider.clear(document.uri);
       inlayHintsProvider.clear(document.uri);
+      analyzer.clearFileCache(uriStr);
     }),
 
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (isOmniConfigAffected(e)) {
+        syncFoldingProviders();
         decorator.createDecorationTypes();
         codeLensProvider.clear();
         for (const editor of vscode.window.visibleTextEditors) {

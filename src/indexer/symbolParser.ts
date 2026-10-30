@@ -1,7 +1,24 @@
 import * as vscode from 'vscode';
-import { SymbolDefinition, SymbolKind } from '../types';
+import { SymbolDefinition, SymbolKind, CompactSymbolDefinition } from '../types';
 
 export class SymbolParser {
+  /**
+   * High-performance indentation length calculation using charCodeAt, avoiding regex allocations.
+   */
+  public static getIndentLength(line: string): number {
+    let count = 0;
+    const len = line.length;
+    while (count < len) {
+      const code = line.charCodeAt(count);
+      if (code === 32 /* space */ || code === 9 /* tab */) {
+        count++;
+      } else {
+        break;
+      }
+    }
+    return count;
+  }
+
   /**
    * Parse document lines into symbol definitions based on language.
    */
@@ -124,19 +141,30 @@ export class SymbolParser {
         continue;
       }
 
-      // Calculate indentation level (using spaces/tabs)
-      const indentMatch = line.match(/^(\s*)/);
-      const indent = indentMatch ? indentMatch[1].length : 0;
+      // Calculate indentation level without regex allocation
+      const indent = SymbolParser.getIndentLength(line);
 
-      // Check if we exited current class scope
+      // Fast check: exit class or method scope
       if (currentClass && indent <= currentClass.indent && !trimmed.startsWith('@')) {
         currentClass = null;
         currentFuncIndent = null;
       }
-
-      // Check if we exited current function/method scope
       if (currentFuncIndent !== null && indent <= currentFuncIndent && !trimmed.startsWith('@')) {
         currentFuncIndent = null;
+      }
+
+      // Fast pre-filter: Skip lines that cannot possibly define classes, functions, or assignments
+      const firstChar = trimmed.charCodeAt(0);
+      const isCandidate =
+        firstChar === 99 /* c - class */ ||
+        firstChar === 100 /* d - def */ ||
+        firstChar === 97 /* a - async def */ ||
+        firstChar === 115 /* s - self. */ ||
+        (firstChar >= 65 && firstChar <= 90) /* A-Z - constants */ ||
+        (firstChar >= 97 && firstChar <= 122) /* a-z - vars */;
+
+      if (!isCandidate) {
+        continue;
       }
 
       // 1. Class definition: class Foo(Bar):
@@ -172,7 +200,7 @@ export class SymbolParser {
           const selectionRange = new vscode.Range(i, startCol, i, endCol);
           const signature = trimmed.replace(/:$/, '');
 
-          definitions.push({
+          definitions.push(new CompactSymbolDefinition({
             name: className,
             kind: 'class',
             parentContainers,
@@ -183,7 +211,7 @@ export class SymbolParser {
             docstring: this.extractDocstring(lines, i + 1),
             fileRelativePath: relativePath,
             isExported: !className.startsWith('_'),
-          });
+          }));
           continue;
         }
       }
@@ -220,7 +248,7 @@ export class SymbolParser {
           const range = new vscode.Range(i, 0, sigEndLine, lines[sigEndLine].length);
           const selectionRange = new vscode.Range(i, startCol, i, endCol);
 
-          definitions.push({
+          definitions.push(new CompactSymbolDefinition({
             name: funcName,
             kind,
             containerName: isMethod && currentClass ? currentClass.name : undefined,
@@ -231,7 +259,7 @@ export class SymbolParser {
             docstring: this.extractDocstring(lines, sigEndLine + 1),
             fileRelativePath: relativePath,
             isExported: !funcName.startsWith('_'),
-          });
+          }));
           continue;
         }
       }
@@ -249,7 +277,7 @@ export class SymbolParser {
               const startCol = line.indexOf(attrName);
               const endCol = startCol + attrName.length;
 
-              definitions.push({
+              definitions.push(new CompactSymbolDefinition({
                 name: attrName,
                 kind: 'property',
                 containerName: currentClass ? currentClass.name : undefined,
@@ -259,7 +287,7 @@ export class SymbolParser {
                 signature: trimmed.length > 80 ? trimmed.substring(0, 80) + '...' : trimmed,
                 fileRelativePath: relativePath,
                 isExported: !attrName.startsWith('_'),
-              });
+              }));
               continue;
             }
           }
@@ -284,7 +312,7 @@ export class SymbolParser {
         const startCol = assignMatch[1].length;
         const endCol = startCol + varName.length;
 
-        definitions.push({
+        definitions.push(new CompactSymbolDefinition({
           name: varName,
           kind,
           containerName: isClassAttr && currentClass ? currentClass.name : undefined,
@@ -294,7 +322,7 @@ export class SymbolParser {
           signature: trimmed.length > 80 ? trimmed.substring(0, 80) + '...' : trimmed,
           fileRelativePath: relativePath,
           isExported: !varName.startsWith('_'),
-        });
+        }));
       }
     }
   }
@@ -354,7 +382,7 @@ export class SymbolParser {
           ? 'type'
           : 'class';
         const startCol = line.indexOf(name);
-        definitions.push({
+        definitions.push(new CompactSymbolDefinition({
           name,
           kind,
           parentContainers: parentContainers.length > 0 ? parentContainers : undefined,
@@ -364,7 +392,7 @@ export class SymbolParser {
           signature: trimmed.replace(/\{$/, '').trim(),
           fileRelativePath: relativePath,
           isExported: line.includes('export'),
-        });
+        }));
         if (kind === 'class') {
           currentClass = name;
         }
@@ -378,7 +406,7 @@ export class SymbolParser {
       if (funcMatch && funcMatch[1]) {
         const name = funcMatch[1];
         const startCol = line.indexOf(name);
-        definitions.push({
+        definitions.push(new CompactSymbolDefinition({
           name,
           kind: 'function',
           uri,
@@ -387,7 +415,7 @@ export class SymbolParser {
           signature: trimmed.replace(/\{$/, '').trim(),
           fileRelativePath: relativePath,
           isExported: line.includes('export'),
-        });
+        }));
         continue;
       }
 
@@ -398,7 +426,7 @@ export class SymbolParser {
       if (constMatch) {
         const name = constMatch[1];
         const startCol = line.indexOf(name);
-        definitions.push({
+        definitions.push(new CompactSymbolDefinition({
           name,
           kind: 'function',
           uri,
@@ -407,7 +435,7 @@ export class SymbolParser {
           signature: trimmed.replace(/\{$/, '').trim(),
           fileRelativePath: relativePath,
           isExported: line.includes('export'),
-        });
+        }));
         continue;
       }
 
@@ -425,7 +453,7 @@ export class SymbolParser {
         ) {
           const name = methodMatch[1];
           const startCol = line.indexOf(name);
-          definitions.push({
+          definitions.push(new CompactSymbolDefinition({
             name,
             kind: 'method',
             containerName: currentClass,
@@ -435,7 +463,7 @@ export class SymbolParser {
             signature: trimmed.replace(/\{$/, '').trim(),
             fileRelativePath: relativePath,
             isExported: true,
-          });
+          }));
         }
       }
     }
@@ -466,7 +494,7 @@ export class SymbolParser {
         const receiver = methodMatch[1];
         const methodName = methodMatch[2];
         const startCol = line.indexOf(methodName);
-        definitions.push({
+        definitions.push(new CompactSymbolDefinition({
           name: methodName,
           kind: 'method',
           containerName: receiver,
@@ -476,7 +504,7 @@ export class SymbolParser {
           signature: trimmed.replace(/\{$/, '').trim(),
           fileRelativePath: relativePath,
           isExported: /^[A-Z]/.test(methodName),
-        });
+        }));
         continue;
       }
 
@@ -485,7 +513,7 @@ export class SymbolParser {
       if (funcMatch) {
         const funcName = funcMatch[1];
         const startCol = line.indexOf(funcName);
-        definitions.push({
+        definitions.push(new CompactSymbolDefinition({
           name: funcName,
           kind: 'function',
           uri,
@@ -494,7 +522,7 @@ export class SymbolParser {
           signature: trimmed.replace(/\{$/, '').trim(),
           fileRelativePath: relativePath,
           isExported: /^[A-Z]/.test(funcName),
-        });
+        }));
         continue;
       }
 
@@ -503,7 +531,7 @@ export class SymbolParser {
       if (typeMatch) {
         const typeName = typeMatch[1];
         const startCol = line.indexOf(typeName);
-        definitions.push({
+        definitions.push(new CompactSymbolDefinition({
           name: typeName,
           kind: typeMatch[2] === 'interface' ? 'interface' : 'class',
           uri,
@@ -512,7 +540,7 @@ export class SymbolParser {
           signature: trimmed,
           fileRelativePath: relativePath,
           isExported: /^[A-Z]/.test(typeName),
-        });
+        }));
       }
     }
 
@@ -538,7 +566,7 @@ export class SymbolParser {
       if (fnMatch) {
         const name = fnMatch[1];
         const startCol = line.indexOf(name);
-        definitions.push({
+        definitions.push(new CompactSymbolDefinition({
           name,
           kind: 'function',
           uri,
@@ -547,7 +575,7 @@ export class SymbolParser {
           signature: trimmed.replace(/\{$/, '').trim(),
           fileRelativePath: relativePath,
           isExported: line.includes('pub '),
-        });
+        }));
         continue;
       }
 
@@ -555,7 +583,7 @@ export class SymbolParser {
       if (structMatch) {
         const name = structMatch[1];
         const startCol = line.indexOf(name);
-        definitions.push({
+        definitions.push(new CompactSymbolDefinition({
           name,
           kind: 'class',
           uri,
@@ -564,7 +592,7 @@ export class SymbolParser {
           signature: trimmed.replace(/\{$/, '').trim(),
           fileRelativePath: relativePath,
           isExported: line.includes('pub '),
-        });
+        }));
       }
     }
 
@@ -596,7 +624,7 @@ export class SymbolParser {
       if (defineMatch) {
         const name = defineMatch[1];
         const startCol = line.indexOf(name);
-        definitions.push({
+        definitions.push(new CompactSymbolDefinition({
           name,
           kind: 'constant',
           uri,
@@ -605,7 +633,7 @@ export class SymbolParser {
           signature: trimmed,
           fileRelativePath: relativePath,
           isExported: true,
-        });
+        }));
         continue;
       }
 
@@ -614,7 +642,7 @@ export class SymbolParser {
       if (structMatch && !trimmed.endsWith(';')) {
         const name = structMatch[1];
         const startCol = line.indexOf(name);
-        definitions.push({
+        definitions.push(new CompactSymbolDefinition({
           name,
           kind: 'class',
           uri,
@@ -623,7 +651,7 @@ export class SymbolParser {
           signature: trimmed,
           fileRelativePath: relativePath,
           isExported: true,
-        });
+        }));
         continue;
       }
 
@@ -632,7 +660,7 @@ export class SymbolParser {
       if (typedefMatch) {
         const name = typedefMatch[1];
         const startCol = line.indexOf(name);
-        definitions.push({
+        definitions.push(new CompactSymbolDefinition({
           name,
           kind: 'class',
           uri,
@@ -641,7 +669,7 @@ export class SymbolParser {
           signature: trimmed,
           fileRelativePath: relativePath,
           isExported: true,
-        });
+        }));
         continue;
       }
 
@@ -674,7 +702,7 @@ export class SymbolParser {
           if (isFunc) {
             const startCol = line.indexOf(name);
             const isStatic = i > 0 && lines[i - 1].includes('static');
-            definitions.push({
+            definitions.push(new CompactSymbolDefinition({
               name,
               kind: 'function',
               uri,
@@ -683,7 +711,7 @@ export class SymbolParser {
               signature: (i > 0 ? lines[i - 1].trim() + ' ' : '') + trimmed,
               fileRelativePath: relativePath,
               isExported: !isStatic,
-            });
+            }));
             continue;
           }
         }
@@ -701,7 +729,7 @@ export class SymbolParser {
         if (!keywords.has(name)) {
           const startCol = line.indexOf(name);
           const isStatic = trimmed.startsWith('static');
-          definitions.push({
+          definitions.push(new CompactSymbolDefinition({
             name,
             kind: 'function',
             uri,
@@ -710,7 +738,7 @@ export class SymbolParser {
             signature: trimmed,
             fileRelativePath: relativePath,
             isExported: !isStatic,
-          });
+          }));
           continue;
         }
       }
@@ -737,7 +765,7 @@ export class SymbolParser {
       if (match) {
         const name = match[1];
         const startCol = line.indexOf(name);
-        definitions.push({
+        definitions.push(new CompactSymbolDefinition({
           name,
           kind: trimmed.includes('class') ? 'class' : 'function',
           uri,
@@ -746,7 +774,7 @@ export class SymbolParser {
           signature: trimmed.substring(0, 80),
           fileRelativePath: relativePath,
           isExported: true,
-        });
+        }));
       }
     }
 

@@ -181,6 +181,10 @@ export class EventEmitter<T = any> {
   }
 }
 
+export const env = {
+  appRoot: '',
+};
+
 export const workspace = {
   workspaceFolders: [] as any[],
   textDocuments: [] as MockTextDocument[],
@@ -224,6 +228,21 @@ export const window = {
   showInformationMessage: async () => undefined,
   showWarningMessage: async () => undefined,
   showQuickPick: async () => undefined,
+  createQuickPick: () => ({
+    title: '',
+    placeholder: '',
+    busy: false,
+    items: [],
+    selectedItems: [],
+    matchOnDescription: false,
+    matchOnDetail: false,
+    show: () => {},
+    hide: () => {},
+    dispose: () => {},
+    onDidAccept: (_cb: any) => ({ dispose: () => {} }),
+    onDidHide: (_cb: any) => ({ dispose: () => {} }),
+    onDidChangeSelection: (_cb: any) => ({ dispose: () => {} }),
+  }),
   showTextDocument: async (doc: any) => ({
     document: doc,
     selection: new Selection(new Position(0, 0), new Position(0, 0)),
@@ -241,6 +260,10 @@ export const window = {
 
 export const languages = {
   registerDefinitionProvider: () => ({ dispose: () => {} }),
+  registerImplementationProvider: () => ({ dispose: () => {} }),
+  registerCodeLensProvider: () => ({ dispose: () => {} }),
+  registerInlayHintsProvider: () => ({ dispose: () => {} }),
+  registerFoldingRangeProvider: () => ({ dispose: () => {} }),
 };
 
 export const commands = {
@@ -262,6 +285,20 @@ export const debug = {
   breakpoints: [],
   onDidChangeBreakpoints: () => ({ dispose: () => {} }),
 };
+
+export enum FoldingRangeKind {
+  Comment = 1,
+  Imports = 2,
+  Region = 3,
+}
+
+export class FoldingRange {
+  constructor(
+    public start: number,
+    public end: number,
+    public kind?: FoldingRangeKind
+  ) {}
+}
 
 export enum SymbolKind {
   File = 0,

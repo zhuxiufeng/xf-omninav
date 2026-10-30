@@ -1096,6 +1096,172 @@ def helper_func():
       'NavigateCommand must calibrate to new line 6 instead of jumping to stale line 2'
     );
   });
+
+  it('should support SymbolParser.getIndentLength without regex allocation', () => {
+    assert.strictEqual(SymbolParser.getIndentLength(''), 0);
+    assert.strictEqual(SymbolParser.getIndentLength('    def foo():'), 4);
+    assert.strictEqual(SymbolParser.getIndentLength('\t\tclass Bar:'), 2);
+    assert.strictEqual(SymbolParser.getIndentLength('class Root:'), 0);
+  });
 });
+
+describe('Next-Phase Deep Optimizations tests', () => {
+  it('should extract acronyms and perform CamelCase & prefix fuzzy search in findFuzzy', () => {
+    assert.strictEqual(SymbolIndexer.extractAcronym('box_filament_err'), 'bfe');
+    assert.strictEqual(SymbolIndexer.extractAcronym('BoxFilamentError'), 'bfe');
+    assert.strictEqual(SymbolIndexer.extractAcronym('get_flush_velocity'), 'gfv');
+    assert.strictEqual(SymbolIndexer.extractAcronym('GetMotionController'), 'gmc');
+
+    const indexer = new SymbolIndexer();
+    const code = `
+class BoxActionBase:
+    def get_flush_velocity(self):
+        pass
+
+class BoxAction(BoxActionBase):
+    def get_flush_velocity(self):
+        pass
+    def box_filament_err(self):
+        pass
+`;
+    const doc = new MockTextDocument(code, 'file:///app/box.py', 'python');
+    indexer.indexDocument(doc as any);
+
+    // 1. Exact match
+    const exact = indexer.findFuzzy('box_filament_err');
+    assert.ok(exact.length >= 1);
+    assert.strictEqual(exact[0].name, 'box_filament_err');
+
+    // 2. Acronym match: "bfe" matches "box_filament_err"
+    const acronymMatches = indexer.findFuzzy('bfe');
+    assert.ok(acronymMatches.length >= 1, 'Should find symbol via acronym "bfe"');
+    assert.strictEqual(acronymMatches[0].name, 'box_filament_err');
+
+    // 3. Acronym match: "gfv" matches "get_flush_velocity"
+    const gfvMatches = indexer.findFuzzy('gfv');
+    assert.ok(gfvMatches.length >= 1, 'Should find symbol via acronym "gfv"');
+    assert.strictEqual(gfvMatches[0].name, 'get_flush_velocity');
+
+    // 4. Prefix match: "box_" matches "BoxAction" & "box_filament_err"
+    const prefixMatches = indexer.findFuzzy('box_');
+    assert.ok(prefixMatches.length >= 1);
+    assert.ok(prefixMatches.some((s) => s.name === 'box_filament_err'));
+  });
+
+  it('should persist and hydrate symbol index from disk cache with 0ms skip on unchanged files', async () => {
+    const os = await import('os');
+    const path = await import('path');
+    const fs = await import('fs');
+
+    const tmpCachePath = path.join(os.tmpdir(), `omninav_test_cache_${Date.now()}.json`);
+
+    try {
+      const indexer = new SymbolIndexer();
+      const code = `
+class HardwareController:
+    def init_device(self):
+        return True
+
+class MotionDriver(HardwareController):
+    def step_forward(self):
+        pass
+`;
+      const doc = new MockTextDocument(code, 'file:///app/motion.py', 'python');
+      indexer.indexDocument(doc as any);
+
+      assert.strictEqual(indexer.totalSymbols, 4); // HardwareController, init_device, MotionDriver, step_forward
+
+      // Save to disk cache
+      const saved = await indexer.saveToDiskCache(tmpCachePath);
+      assert.strictEqual(saved, true, 'Cache must save successfully');
+      assert.ok(fs.existsSync(tmpCachePath), 'Cache file must exist on disk');
+
+      // Clear in-memory index
+      indexer.clear();
+      assert.strictEqual(indexer.totalSymbols, 0);
+
+      // Hydrate from disk cache
+      const loaded = await indexer.loadFromDiskCache(tmpCachePath);
+      assert.strictEqual(loaded, true, 'Cache must load successfully');
+      assert.strictEqual(indexer.totalSymbols, 4, 'Must restore all 4 symbols from cache');
+
+      const motionDriver = indexer.findExact('MotionDriver');
+      assert.strictEqual(motionDriver.length, 1);
+      assert.strictEqual(motionDriver[0].kind, 'class');
+
+      const supers = indexer.getSuperClasses('MotionDriver');
+      assert.deepStrictEqual(supers, ['HardwareController']);
+    } finally {
+      try {
+        const fs = await import('fs');
+        if (fs.existsSync(tmpCachePath)) {
+          fs.unlinkSync(tmpCachePath);
+        }
+      } catch {}
+    }
+  });
+
+  it('should stream usages progressively via findUsagesStreaming', async () => {
+    const { UsageResolver } = await import('../src/resolver/usageResolver');
+
+    const code = `
+def calculate_speed(v: float):
+    return v * 2
+
+def execute():
+    s1 = calculate_speed(10.0)
+    s2 = calculate_speed(20.0)
+    return s1 + s2
+`;
+    const doc = new MockTextDocument(code, 'file:///app/calc.py', 'python');
+    workspace.textDocuments.push(doc as any);
+
+    const batches: any[][] = [];
+    let finished = false;
+
+    const usages = await UsageResolver.findUsagesStreaming(
+      doc as any,
+      new Position(1, 4) as any, // "calculate_speed" def
+      'calculate_speed',
+      (batch, isDone) => {
+        if (batch.length > 0) batches.push(batch);
+        if (isDone) finished = true;
+      }
+    );
+
+    assert.strictEqual(finished, true, 'Must report streaming isDone');
+    assert.ok(usages.length >= 2, 'Must find both call sites in execute()');
+  });
+
+  it('should generate valid Mermaid classDiagram markdown with method override annotations', async () => {
+    const { MermaidHierarchyExporter } = await import('../src/visual/mermaidExporter');
+
+    const indexer = new SymbolIndexer();
+    const code = `
+class BoxActionBase:
+    def get_flush_velocity(self):
+        pass
+    def init_box(self):
+        pass
+
+class BoxAction(BoxActionBase):
+    def get_flush_velocity(self):
+        pass
+    def custom_sub_action(self):
+        pass
+`;
+    const doc = new MockTextDocument(code, 'file:///app/box.py', 'python');
+    indexer.indexDocument(doc as any);
+
+    const markdown = MermaidHierarchyExporter.generateMermaidMarkdown(indexer, 'BoxAction');
+
+    assert.ok(markdown.includes('```mermaid'), 'Must include mermaid block');
+    assert.ok(markdown.includes('classDiagram'), 'Must specify classDiagram');
+    assert.ok(markdown.includes('BoxActionBase <|-- BoxAction'), 'Must include inheritance relationship');
+    assert.ok(markdown.includes('+get_flush_velocity()*'), 'Overriding method must be marked with *');
+    assert.ok(markdown.includes('+custom_sub_action()'), 'Normal method must be included');
+  });
+});
+
 
 

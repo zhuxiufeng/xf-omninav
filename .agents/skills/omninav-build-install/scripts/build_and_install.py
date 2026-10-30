@@ -1,0 +1,1 @@
+/home/zxf/workspace/code/agy/guitool/extension/omninav/scripts/build_and_install.py

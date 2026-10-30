@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as cp from 'child_process';
+import { getRipgrepPath } from '../utils';
 
 import { ContextResolver, EnclosingClassInfo } from './contextResolver';
 
@@ -24,6 +26,12 @@ export interface CallScanContext {
 }
 
 export class UsageResolver {
+  // Pre-compiled regex cache for isAtDefinition to avoid high-frequency regex allocations
+  private static defRegexCache = new Map<
+    string,
+    { py: RegExp[]; js: RegExp[]; generic: RegExp[] }
+  >();
+
   /**
    * Check if current position is on the definition header of symbolName.
    */
@@ -33,17 +41,43 @@ export class UsageResolver {
     symbolName: string
   ): boolean {
     const lineText = document.lineAt(position.line).text;
-    const escaped = symbolName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    // Fast path: if the line does not contain symbolName, it cannot be a definition
+    if (!lineText.includes(symbolName)) {
+      return false;
+    }
+
+    let patterns = this.defRegexCache.get(symbolName);
+    if (!patterns) {
+      const escaped = symbolName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      patterns = {
+        py: [
+          new RegExp(`^\\s*(?:async\\s+)?def\\s+${escaped}\\b`),
+          new RegExp(`^\\s*class\\s+${escaped}\\b`),
+          new RegExp(`^\\s*(?:self|cls)\\.${escaped}\\b(?:\\s*:\\s*[^=]+)?\\s*=`),
+          new RegExp(`^\\s*${escaped}\\b(?:\\s*:\\s*[^=]+)?\\s*=`),
+        ],
+        js: [
+          new RegExp(`(?:function|class|interface|type)\\s+${escaped}\\b`),
+          new RegExp(`(?:const|let|var)\\s+${escaped}\\b\\s*(?::\\s*[^=]+)?\\s*=`),
+          new RegExp(`^\\s*(?:public|private|protected|async|static|\\*)*\\s*${escaped}\\b\\s*\\(`),
+        ],
+        generic: [
+          new RegExp(`(?:def|function|class|fn|func|struct)\\s+${escaped}\\b`),
+          new RegExp(`^\\s*${escaped}\\b\\s*[:=]`),
+        ],
+      };
+
+      if (this.defRegexCache.size >= 256) {
+        const keys = Array.from(this.defRegexCache.keys()).slice(0, 64);
+        for (const k of keys) this.defRegexCache.delete(k);
+      }
+      this.defRegexCache.set(symbolName, patterns);
+    }
 
     // 1. Python patterns
     if (document.languageId === 'python') {
-      const pyPatterns = [
-        new RegExp(`^\\s*(?:async\\s+)?def\\s+${escaped}\\b`),
-        new RegExp(`^\\s*class\\s+${escaped}\\b`),
-        new RegExp(`^\\s*(?:self|cls)\\.${escaped}\\b(?:\\s*:\\s*[^=]+)?\\s*=`),
-        new RegExp(`^\\s*${escaped}\\b(?:\\s*:\\s*[^=]+)?\\s*=`),
-      ];
-      return pyPatterns.some((pattern) => pattern.test(lineText));
+      return patterns.py.some((pattern) => pattern.test(lineText));
     }
 
     // 2. JS / TS patterns
@@ -53,20 +87,11 @@ export class UsageResolver {
       document.languageId === 'typescriptreact' ||
       document.languageId === 'javascriptreact'
     ) {
-      const jsPatterns = [
-        new RegExp(`(?:function|class|interface|type)\\s+${escaped}\\b`),
-        new RegExp(`(?:const|let|var)\\s+${escaped}\\b\\s*(?::\\s*[^=]+)?\\s*=`),
-        new RegExp(`^\\s*(?:public|private|protected|async|static|\\*)*\\s*${escaped}\\b\\s*\\(`),
-      ];
-      return jsPatterns.some((pattern) => pattern.test(lineText));
+      return patterns.js.some((pattern) => pattern.test(lineText));
     }
 
     // 3. Generic fallback patterns
-    const genericPatterns = [
-      new RegExp(`(?:def|function|class|fn|func|struct)\\s+${escaped}\\b`),
-      new RegExp(`^\\s*${escaped}\\b\\s*[:=]`),
-    ];
-    return genericPatterns.some((pattern) => pattern.test(lineText));
+    return patterns.generic.some((pattern) => pattern.test(lineText));
   }
 
   /**
@@ -78,6 +103,19 @@ export class UsageResolver {
     symbolName: string,
     indexer?: any
   ): Promise<UsageItem[]> {
+    return this.findUsagesStreaming(document, position, symbolName, () => {}, indexer);
+  }
+
+  /**
+   * Progressive streaming search: emits batches of usages as they are found.
+   */
+  public static async findUsagesStreaming(
+    document: vscode.TextDocument,
+    position: vscode.Position,
+    symbolName: string,
+    onBatch: (items: UsageItem[], isDone: boolean) => void,
+    indexer?: any
+  ): Promise<UsageItem[]> {
     if (indexer && typeof indexer.ensureSynchronized === 'function') {
       indexer.ensureSynchronized(document.uri);
     }
@@ -86,6 +124,12 @@ export class UsageResolver {
     const results: UsageItem[] = [];
     const defKey = `${document.uri.toString()}:${position.line}`;
     const defKeys = new Set<string>([defKey]);
+
+    const emitBatch = (batch: UsageItem[], done = false) => {
+      if (batch.length > 0 || done) {
+        onBatch(batch, done);
+      }
+    };
 
     // Check if current position is within a subclass method definition
     const enclosingClass = ContextResolver.getEnclosingClass(document, position);
@@ -179,13 +223,16 @@ export class UsageResolver {
 
     // 2. Fast scan inside current document (instant & 100% resilient)
     const docResults = this.scanDocumentForCalls(document, symbolName, position.line, defKeys, scanContext);
+    const initialBatch: UsageItem[] = [];
     for (const item of docResults) {
       const key = `${item.uri.toString()}:${item.range.start.line}`;
       if (!defKeys.has(key) && !seen.has(key)) {
         seen.add(key);
         results.push(item);
+        initialBatch.push(item);
       }
     }
+    emitBatch(initialBatch);
 
     // 3. Workspace file call search
     const ext = path.extname(document.uri.fsPath);
@@ -208,28 +255,11 @@ export class UsageResolver {
           continue;
         }
         try {
-          const matchedFiles = await new Promise<string[]>((resolve) => {
-            const cp = require('child_process');
-            cp.execFile(
-              'grep',
-              ['-rn', '-l', '-w', `--include=*${ext}`, searchSymbol, rootPath],
-              { timeout: 3000 },
-              (err: any, stdout: string) => {
-                if (err && err.code !== 1) {
-                  resolve([]);
-                } else if (stdout) {
-                  const files = stdout
-                    .trim()
-                    .split(/\r?\n/)
-                    .map((s: string) => s.trim())
-                    .filter(Boolean);
-                  resolve(files);
-                } else {
-                  resolve([]);
-                }
-              }
-            );
-          });
+          const matchedFiles = await UsageResolver.fastSearchWorkspaceFiles(
+            rootPath,
+            ext,
+            searchSymbol
+          );
 
           if (matchedFiles.length > 0) {
             grepSucceeded = true;
@@ -257,12 +287,17 @@ export class UsageResolver {
               if (!content) continue;
 
               const fileResults = this.scanTextForCalls(fileUri, content, symbolName, undefined, defKeys, scanContext);
+              const fileBatch: UsageItem[] = [];
               for (const item of fileResults) {
                 const key = `${item.uri.toString()}:${item.range.start.line}`;
                 if (!defKeys.has(key) && !seen.has(key)) {
                   seen.add(key);
                   results.push(item);
+                  fileBatch.push(item);
                 }
+              }
+              if (fileBatch.length > 0) {
+                emitBatch(fileBatch);
               }
             }
           }
@@ -311,12 +346,17 @@ export class UsageResolver {
                 }
 
                 const fileResults = this.scanTextForCalls(uri, content, symbolName, undefined, defKeys, scanContext);
+                const fileBatch: UsageItem[] = [];
                 for (const item of fileResults) {
                   const key = `${item.uri.toString()}:${item.range.start.line}`;
                   if (!defKeys.has(key) && !seen.has(key)) {
                     seen.add(key);
                     results.push(item);
+                    fileBatch.push(item);
                   }
+                }
+                if (fileBatch.length > 0) {
+                  emitBatch(fileBatch);
                 }
               } catch {}
             })
@@ -343,12 +383,17 @@ export class UsageResolver {
             continue;
           }
           const fileResults = this.scanTextForCalls(openDoc.uri, text, symbolName, undefined, defKeys, scanContext);
+          const fileBatch: UsageItem[] = [];
           for (const item of fileResults) {
             const key = `${item.uri.toString()}:${item.range.start.line}`;
             if (!defKeys.has(key) && !seen.has(key)) {
               seen.add(key);
               results.push(item);
+              fileBatch.push(item);
             }
+          }
+          if (fileBatch.length > 0) {
+            emitBatch(fileBatch);
           }
         } catch {}
       }
@@ -367,12 +412,13 @@ export class UsageResolver {
       );
       if (templateCaller) {
         results.push(templateCaller);
+        emitBatch([templateCaller]);
       }
     }
 
     // Sort by: current file first, then line number
     const currentDocStr = document.uri.toString();
-    return results.sort((a, b) => {
+    const sorted = results.sort((a, b) => {
       const aIsCurrent = a.uri.toString() === currentDocStr ? 1 : 0;
       const bIsCurrent = b.uri.toString() === currentDocStr ? 1 : 0;
       if (aIsCurrent !== bIsCurrent) {
@@ -380,6 +426,9 @@ export class UsageResolver {
       }
       return a.range.start.line - b.range.start.line;
     });
+
+    emitBatch([], true);
+    return sorted;
   }
 
   public static isParentPath(targetPath: string, parentUris: Set<string>): boolean {
@@ -469,18 +518,85 @@ export class UsageResolver {
       }
     }
 
+    // If no parent class names, return immediately
+    if (parentClassNames.size === 0) {
+      return { parentUris, parentClassNames };
+    }
+
     // Also check open documents or indexer for any files whose name matches imported base class
     for (const openDoc of vscode.workspace.textDocuments || []) {
       if (openDoc.uri.toString() === document.uri.toString()) continue;
-      const text = openDoc.getText();
+      // Fast check: only call getText if document language matches and filename or quick probe hints at base class
+      let text: string | undefined;
       for (const p of parentClassNames) {
-        if (new RegExp(`^\\s*class\\s+${p}\\b`, 'm').test(text)) {
+        if (!text) text = openDoc.getText();
+        if (text.includes(p) && new RegExp(`^\\s*class\\s+${p}\\b`, 'm').test(text)) {
           parentUris.add(openDoc.uri.toString());
         }
       }
     }
 
     return { parentUris, parentClassNames };
+  }
+
+  private static rgAvailable: boolean | null = null;
+
+  /**
+   * Fast search for files containing searchSymbol, prioritizing ripgrep (rg) with fallback to grep.
+   */
+  public static async fastSearchWorkspaceFiles(
+    rootPath: string,
+    ext: string,
+    searchSymbol: string
+  ): Promise<string[]> {
+    // 1. Try ripgrep (rg) if available (preferring bundled SIMD/AVX binary)
+    const rgBin = getRipgrepPath() || 'rg';
+    if (this.rgAvailable !== false) {
+      try {
+        const rgResults = await new Promise<string[]>((resolve, reject) => {
+          cp.execFile(
+            rgBin,
+            ['--files-with-matches', '-w', '-g', `*${ext}`, '--no-heading', searchSymbol, rootPath],
+            { timeout: 3000 },
+            (err, stdout) => {
+              if (err && (err as any).code === 'ENOENT') {
+                this.rgAvailable = false;
+                reject(err);
+              } else if (err && (err as any).code !== 1) {
+                resolve([]);
+              } else if (stdout) {
+                this.rgAvailable = true;
+                resolve(stdout.trim().split(/\r?\n/).map((s) => s.trim()).filter(Boolean));
+              } else {
+                this.rgAvailable = true;
+                resolve([]);
+              }
+            }
+          );
+        });
+        return rgResults;
+      } catch {
+        // Fall through to grep
+      }
+    }
+
+    // 2. Fallback to grep
+    return new Promise<string[]>((resolve) => {
+      cp.execFile(
+        'grep',
+        ['-rn', '-l', '-w', `--include=*${ext}`, searchSymbol, rootPath],
+        { timeout: 3000 },
+        (err: any, stdout: string) => {
+          if (err && err.code !== 1) {
+            resolve([]);
+          } else if (stdout) {
+            resolve(stdout.trim().split(/\r?\n/).map((s) => s.trim()).filter(Boolean));
+          } else {
+            resolve([]);
+          }
+        }
+      );
+    });
   }
 
   public static async findSubclassTemplateCaller(
