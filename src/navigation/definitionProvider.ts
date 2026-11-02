@@ -8,6 +8,8 @@ import { SymbolDefinition } from '../types';
 import { getOmniConfig } from '../utils';
 
 export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
+  private static isQueryingLsp = false;
+
   constructor(private indexer: SymbolIndexer) {}
 
   public async provideDefinition(
@@ -15,6 +17,10 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
     position: vscode.Position,
     token: vscode.CancellationToken
   ): Promise<vscode.LocationLink[] | vscode.Location[] | null> {
+    if (SmoothDefinitionProvider.isQueryingLsp) {
+      return null;
+    }
+
     const isEnabled = getOmniConfig<boolean>('enable', true);
     if (!isEnabled) {
       return null;
@@ -56,6 +62,9 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
       return null;
     }
 
+    // Query native LSP definitions in background (with re-entrancy guard)
+    const lspTargets = await this.queryLspDefinitions(document, position);
+
     // 3. Resolve receiver & container context (subclass override resolution)
     const receiver = ContextResolver.inferReceiverFromPrefix(document, position, wordRange);
     const containerHint = receiver.containerName;
@@ -66,6 +75,9 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
     if (!receiver.isSelf && !receiver.isCls && !receiver.isSuper && !receiver.varName) {
       const localScope = ContextResolver.resolveLocalScope(document, position, symbolName);
       if (localScope) {
+        if (this.isCoveredByLsp(localScope, lspTargets)) {
+          return null;
+        }
         return [
           await this.toCalibratedLocationLink(wordRange, localScope.uri, localScope.range, localScope.selectionRange, symbolName)
         ];
@@ -82,6 +94,9 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
         document.uri
       );
       if (subclassDef) {
+        if (this.isCoveredByLsp(subclassDef, lspTargets)) {
+          return null;
+        }
         return [
           await this.toCalibratedLocationLink(wordRange, subclassDef.uri, subclassDef.range, subclassDef.selectionRange, symbolName, receiver.containerName)
         ];
@@ -94,6 +109,9 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
         document.uri
       );
       if (inheritedDef) {
+        if (this.isCoveredByLsp(inheritedDef, lspTargets)) {
+          return null;
+        }
         return [
           await this.toCalibratedLocationLink(wordRange, inheritedDef.uri, inheritedDef.range, inheritedDef.selectionRange, symbolName, inheritedDef.containerName)
         ];
@@ -102,6 +120,9 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
       // Check immediate in-document definition (e.g. self.xxx = ... created in this file)
       const localDef = this.scanLocalDocument(document, symbolName, receiver.containerName);
       if (localDef) {
+        if (this.isCoveredByLsp(localDef, lspTargets)) {
+          return null;
+        }
         return [
           await this.toCalibratedLocationLink(wordRange, localDef.uri, localDef.range, localDef.selectionRange, symbolName, receiver.containerName)
         ];
@@ -120,6 +141,9 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
         document.uri
       );
       if (parentDef) {
+        if (this.isCoveredByLsp(parentDef, lspTargets)) {
+          return null;
+        }
         return [
           await this.toCalibratedLocationLink(wordRange, parentDef.uri, parentDef.range, parentDef.selectionRange, symbolName, parentDef.containerName)
         ];
@@ -142,6 +166,9 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
           const inDoc = overrides.find((o) => o.uri.toString() === document.uri.toString());
           const chosen = inDoc || overrides[0];
           if (inDoc || overrides.length === 1 || !directMatch) {
+            if (this.isCoveredByLsp(chosen, lspTargets)) {
+              return null;
+            }
             return [
               await this.toCalibratedLocationLink(wordRange, chosen.uri, chosen.range, chosen.selectionRange, symbolName, chosen.containerName)
             ];
@@ -150,6 +177,9 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
       }
 
       if (directMatch) {
+        if (this.isCoveredByLsp(directMatch, lspTargets)) {
+          return null;
+        }
         return [
           await this.toCalibratedLocationLink(wordRange, directMatch.uri, directMatch.range, directMatch.selectionRange, symbolName, directMatch.containerName)
         ];
@@ -209,9 +239,24 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
       matchedDefs = filteredDefs;
     }
 
-    if (matchedDefs.length === 0) {
+    // Deduplicate internally by file URI and start line
+    const seenLocations = new Set<string>();
+    matchedDefs = matchedDefs.filter((d) => {
+      const key = `${d.uri.toString()}:${d.range.start.line}`;
+      if (seenLocations.has(key)) {
+        return false;
+      }
+      seenLocations.add(key);
+      return true;
+    });
+
+    // Filter out candidates that are already covered by the language server
+    // to prevent VS Code from showing duplicate entries in the Peek widget
+    const filteredByLsp = matchedDefs.filter((d) => !this.isCoveredByLsp(d, lspTargets));
+    if (filteredByLsp.length === 0) {
       return null;
     }
+    matchedDefs = filteredByLsp;
 
     // Convert to calibrated LocationLinks
     return await Promise.all(
@@ -219,6 +264,102 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
         this.toCalibratedLocationLink(wordRange, def.uri, def.range, def.selectionRange, symbolName, def.containerName)
       )
     );
+  }
+
+  /**
+   * Query native language server definitions with re-entrancy protection.
+   */
+  private async queryLspDefinitions(
+    document: vscode.TextDocument,
+    position: vscode.Position
+  ): Promise<Array<{ uriStr: string; line: number; range?: vscode.Range }>> {
+    if (SmoothDefinitionProvider.isQueryingLsp) {
+      return [];
+    }
+
+    SmoothDefinitionProvider.isQueryingLsp = true;
+    try {
+      let timer: NodeJS.Timeout | undefined;
+      const lspPromise = vscode.commands.executeCommand<
+        vscode.Location | vscode.Location[] | vscode.LocationLink[] | undefined
+      >('vscode.executeDefinitionProvider', document.uri, position);
+
+      const timeoutPromise = new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), 250);
+      });
+
+      const raw = await Promise.race([lspPromise, timeoutPromise]);
+      if (timer) {
+        clearTimeout(timer);
+      }
+
+      if (!raw) {
+        return [];
+      }
+
+      const list: Array<vscode.Location | vscode.LocationLink> = Array.isArray(raw)
+        ? raw
+        : [raw as vscode.Location];
+
+      const targets: Array<{ uriStr: string; line: number; range?: vscode.Range }> = [];
+      for (const item of list) {
+        if (!item) continue;
+        if ('targetUri' in item) {
+          const selRange = item.targetSelectionRange || item.targetRange;
+          targets.push({
+            uriStr: item.targetUri.toString(),
+            line: selRange.start.line,
+            range: item.targetRange,
+          });
+        } else if ('uri' in item && 'range' in item) {
+          targets.push({
+            uriStr: item.uri.toString(),
+            line: item.range.start.line,
+            range: item.range,
+          });
+        }
+      }
+      return targets;
+    } catch {
+      return [];
+    } finally {
+      SmoothDefinitionProvider.isQueryingLsp = false;
+    }
+  }
+
+  /**
+   * Check if a candidate definition is already covered by the language server
+   * to prevent VS Code from showing duplicate entries in the Peek widget.
+   */
+  private isCoveredByLsp(
+    def: SymbolDefinition,
+    lspTargets: Array<{ uriStr: string; line: number; range?: vscode.Range }>
+  ): boolean {
+    if (lspTargets.length === 0) {
+      return false;
+    }
+    const defUriStr = def.uri.toString();
+    const defLine = def.selectionRange.start.line;
+    const defRangeStartLine = def.range.start.line;
+
+    return lspTargets.some((lsp) => {
+      if (lsp.uriStr !== defUriStr) {
+        return false;
+      }
+      if (lsp.line === defLine || lsp.line === defRangeStartLine) {
+        return true;
+      }
+      if (Math.abs(lsp.line - defLine) <= 1 || Math.abs(lsp.line - defRangeStartLine) <= 1) {
+        return true;
+      }
+      if (lsp.range && (lsp.range.contains(def.selectionRange.start) || lsp.range.contains(def.range.start))) {
+        return true;
+      }
+      if (def.range && lsp.range && def.range.contains(lsp.range.start)) {
+        return true;
+      }
+      return false;
+    });
   }
 
   /**

@@ -1261,6 +1261,70 @@ class BoxAction(BoxActionBase):
     assert.ok(markdown.includes('+get_flush_velocity()*'), 'Overriding method must be marked with *');
     assert.ok(markdown.includes('+custom_sub_action()'), 'Normal method must be included');
   });
+
+  it('should eliminate duplicate definitions when native LSP already resolves the target', async () => {
+    const { commands, Location, Range } = await import('./vscode-mock');
+    const { SmoothDefinitionProvider } = await import('../src/navigation/definitionProvider');
+
+    const code = `
+class MultiColorMeterialBoxWrapper:
+    def __init__(self):
+        self.cmd_communication_test()
+
+    def cmd_communication_test(self, gcmd):
+        pass
+`;
+    const doc = new MockTextDocument(code, 'file:///app/box_wrapper.py', 'python');
+    const indexer = new SymbolIndexer();
+    indexer.indexDocument(doc as any);
+
+    const provider = new SmoothDefinitionProvider(indexer);
+    // Cursor on self.cmd_communication_test() at line 3 (col 18)
+    const pos = new Position(3, 18);
+
+    // Scenario 1: Native LSP already returns the definition at line 5
+    const origExecute = commands.executeCommand;
+    try {
+      commands.executeCommand = async (cmd: string, ...args: any[]) => {
+        if (cmd === 'vscode.executeDefinitionProvider') {
+          return [
+            new Location(
+              Uri.file('/app/box_wrapper.py') as any,
+              new Range(new Position(5, 4), new Position(6, 12)) as any
+            ),
+          ];
+        }
+        return undefined;
+      };
+
+      const resultWithLsp = await provider.provideDefinition(
+        doc as any,
+        pos as any,
+        {} as any
+      );
+
+      // Must return null so VS Code receives ONLY 1 definition from LSP (0 popups, direct jump!)
+      assert.strictEqual(
+        resultWithLsp,
+        null,
+        'SmoothDefinitionProvider MUST return null when LSP already provides the exact definition'
+      );
+
+      // Scenario 2: Native LSP returns nothing (e.g. dynamic attribute or LSP unindexed)
+      commands.executeCommand = async () => [];
+      const resultWithoutLsp = (await provider.provideDefinition(
+        doc as any,
+        pos as any,
+        {} as any
+      )) as any[];
+
+      assert.ok(resultWithoutLsp, 'Must fallback to OmniNav when LSP has no definition');
+      assert.strictEqual(resultWithoutLsp.length, 1, 'Must return exactly 1 definition');
+      assert.strictEqual(resultWithoutLsp[0].targetRange.start.line, 5, 'Must target line 5 definition');
+    } finally {
+      commands.executeCommand = origExecute;
+    }
+  });
 });
 
 
