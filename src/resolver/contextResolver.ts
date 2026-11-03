@@ -137,6 +137,22 @@ export class ContextResolver {
       };
     }
 
+    // 2.5 Check self.<property> or this.<property>: e.g. self.box_action.method()
+    const selfPropMatch = prefix.match(/(?:self|this)\.([A-Za-z0-9_]+)\s*(?:->|\.)\s*$/);
+    if (selfPropMatch) {
+      const propName = selfPropMatch[1];
+      const propType = this.inferSelfPropertyType(document, propName, position.line);
+      const containerName = propType || this.snakeToPascal(propName);
+      return {
+        rawPrefix: prefix,
+        varName: propName,
+        containerName,
+        isSelf: false,
+        isCls: false,
+        isSuper: false,
+      };
+    }
+
     // 3. Check dot expression: obj.method or Class.method
     const dotMatch = prefix.match(/([A-Za-z0-9_]+)\s*(?:->|\.)\s*$/);
     if (dotMatch) {
@@ -158,7 +174,7 @@ export class ContextResolver {
       return {
         rawPrefix: prefix,
         varName,
-        containerName: inferredType || varName,
+        containerName: inferredType || this.snakeToPascal(varName),
         isSelf: false,
         isCls: false,
         isSuper: false,
@@ -215,6 +231,36 @@ export class ContextResolver {
     }
 
     return undefined;
+  }
+
+  /**
+   * Infer property type from self.<propName> = ClassName(...) or this.<propName> = ...
+   */
+  public static inferSelfPropertyType(
+    document: vscode.TextDocument,
+    propName: string,
+    currentLine?: number
+  ): string | undefined {
+    const text = document.getText();
+    const escaped = propName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Match self.prop = ClassName(...) or self.prop = module.ClassName(...)
+    const regex = new RegExp(`(?:self|this)\\.${escaped}\\s*=\\s*(?:[A-Za-z0-9_]+\\.)?([A-Z][A-Za-z0-9_]*)`);
+    const match = text.match(regex);
+    if (match && match[1]) {
+      return match[1];
+    }
+    return undefined;
+  }
+
+  /**
+   * Convert snake_case to PascalCase:
+   * e.g. "box_action" -> "BoxAction", "waste_chute_sensor" -> "WasteChuteSensor"
+   */
+  public static snakeToPascal(str: string): string {
+    return str
+      .split('_')
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join('');
   }
 
   /**

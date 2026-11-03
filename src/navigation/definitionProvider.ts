@@ -197,6 +197,18 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
       }
     }
 
+    // If matching container definitions exist in the CURRENT document, prefer current document and drop other files:
+    if (containerHint && matchedDefs.length > 1) {
+      const currentDocDefs = matchedDefs.filter(
+        (d) =>
+          (d.uri.toString() === document.uri.toString() || d.uri.fsPath === document.uri.fsPath) &&
+          this.matchContainer(d.containerName, containerHint)
+      );
+      if (currentDocDefs.length > 0) {
+        matchedDefs = currentDocDefs;
+      }
+    }
+
     // If multiple matches include both C implementation (.c/.cpp) and header (.h/.hpp),
     // prioritize the implementation file to jump directly without popup:
     const cImpls = matchedDefs.filter((d) => /\.(?:c|cpp|cxx|cc)$/i.test(d.uri.fsPath));
@@ -285,7 +297,7 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
       >('vscode.executeDefinitionProvider', document.uri, position);
 
       const timeoutPromise = new Promise<undefined>((resolve) => {
-        timer = setTimeout(() => resolve(undefined), 250);
+        timer = setTimeout(() => resolve(undefined), 450);
       });
 
       const raw = await Promise.race([lspPromise, timeoutPromise]);
@@ -301,19 +313,21 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
         ? raw
         : [raw as vscode.Location];
 
-      const targets: Array<{ uriStr: string; line: number; range?: vscode.Range }> = [];
+      const targets: Array<{ uriStr: string; fsPath?: string; line: number; range?: vscode.Range }> = [];
       for (const item of list) {
         if (!item) continue;
         if ('targetUri' in item) {
           const selRange = item.targetSelectionRange || item.targetRange;
           targets.push({
             uriStr: item.targetUri.toString(),
+            fsPath: item.targetUri.fsPath,
             line: selRange.start.line,
             range: item.targetRange,
           });
         } else if ('uri' in item && 'range' in item) {
           targets.push({
             uriStr: item.uri.toString(),
+            fsPath: item.uri.fsPath,
             line: item.range.start.line,
             range: item.range,
           });
@@ -333,17 +347,21 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
    */
   private isCoveredByLsp(
     def: SymbolDefinition,
-    lspTargets: Array<{ uriStr: string; line: number; range?: vscode.Range }>
+    lspTargets: Array<{ uriStr: string; fsPath?: string; line: number; range?: vscode.Range }>
   ): boolean {
     if (lspTargets.length === 0) {
       return false;
     }
     const defUriStr = def.uri.toString();
+    const defFsPath = def.uri.fsPath;
     const defLine = def.selectionRange.start.line;
     const defRangeStartLine = def.range.start.line;
 
     return lspTargets.some((lsp) => {
-      if (lsp.uriStr !== defUriStr) {
+      const sameFile =
+        lsp.uriStr === defUriStr ||
+        (lsp.fsPath && defFsPath && lsp.fsPath.toLowerCase() === defFsPath.toLowerCase());
+      if (!sameFile) {
         return false;
       }
       if (lsp.line === defLine || lsp.line === defRangeStartLine) {

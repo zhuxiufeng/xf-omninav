@@ -1325,6 +1325,78 @@ class MultiColorMeterialBoxWrapper:
       commands.executeCommand = origExecute;
     }
   });
+
+  it('should isolate self.box_action to current file BoxAction and never pollute with box_wrapper.py', async () => {
+    const { commands, Location, Range } = await import('./vscode-mock');
+    const { SmoothDefinitionProvider } = await import('../src/navigation/definitionProvider');
+    const { NavigateCommand } = await import('../src/navigation/navigateCommand');
+
+    const nanoCode = `
+class BoxAction:
+    def box_retrude_material(self, box_tnn=None):
+        pass
+
+class BoxWrapper:
+    def __init__(self):
+        self.box_action = BoxAction()
+
+    def step_quit_retrude_material(self, params):
+        ret = self.box_action.box_retrude_material()
+`;
+
+    const wrapperCode = `
+class BoxAction:
+    def box_retrude_material(self):
+        pass
+`;
+
+    const nanoUri = Uri.file('/app/box_nano_wrapper.py');
+    const wrapperUri = Uri.file('/app/box_wrapper.py');
+
+    const indexer = new SymbolIndexer();
+    indexer.indexFile(nanoUri as any, nanoCode);
+    indexer.indexFile(wrapperUri as any, wrapperCode);
+
+    const nanoDoc = new MockTextDocument(nanoCode, 'file:///app/box_nano_wrapper.py', 'python');
+    const wrapperDoc = new MockTextDocument(wrapperCode, 'file:///app/box_wrapper.py', 'python');
+    const origDocs = workspace.textDocuments;
+    workspace.textDocuments = [nanoDoc, wrapperDoc];
+
+    const provider = new SmoothDefinitionProvider(indexer);
+    // Line 10: "        ret = self.box_action.box_retrude_material()" (col 32)
+    const pos = new Position(10, 32);
+
+    const origExecute = commands.executeCommand;
+    try {
+      // 1. When LSP has no definition, OmniNav must return ONLY current file's BoxAction (1 definition, never 2 or 3!)
+      commands.executeCommand = async () => [];
+      const result = (await provider.provideDefinition(nanoDoc as any, pos as any, {} as any)) as any[];
+
+      assert.ok(result, 'Must return definition');
+      assert.strictEqual(result.length, 1, 'Must return EXACTLY 1 definition in current file');
+      assert.strictEqual(result[0].targetUri.toString(), nanoDoc.uri.toString(), 'Target must be box_nano_wrapper.py');
+      assert.strictEqual(result[0].targetRange.start.line, 2, 'Must target line 2 definition in box_nano_wrapper.py');
+
+      // 2. When LSP already returns current file definition, OmniNav must return null (0 duplicate peek!)
+      commands.executeCommand = async (cmd: string) => {
+        if (cmd === 'vscode.executeDefinitionProvider') {
+          return [
+            new Location(
+              Uri.file('/app/box_nano_wrapper.py') as any,
+              new Range(new Position(2, 4), new Position(3, 12)) as any
+            ),
+          ];
+        }
+        return undefined;
+      };
+
+      const resultLsp = await provider.provideDefinition(nanoDoc as any, pos as any, {} as any);
+      assert.strictEqual(resultLsp, null, 'Must return null when LSP already covers current file definition');
+    } finally {
+      commands.executeCommand = origExecute;
+      workspace.textDocuments = origDocs;
+    }
+  });
 });
 
 

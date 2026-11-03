@@ -432,7 +432,7 @@ export class SymbolIndexer implements vscode.Disposable {
 
   /**
    * Find definitions by container (class name) and symbol name.
-   * e.g. container = "User", method = "login"
+   * e.g. container = "User", method = "login", or snake_case "box_action" -> "BoxAction"
    */
   public findByContainer(
     containerName: string,
@@ -440,16 +440,26 @@ export class SymbolIndexer implements vscode.Disposable {
     preferredUri?: vscode.Uri | string
   ): SymbolDefinition[] {
     const candidates = this.findExact(symbolName);
-    const matched = candidates.filter(
-      (def) => def.containerName?.toLowerCase() === containerName.toLowerCase()
-    );
+    const cleanContainer = containerName.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const matched = candidates.filter((def) => {
+      if (!def.containerName) return false;
+      const cleanDef = def.containerName.toLowerCase().replace(/[^a-z0-9]/g, '');
+      return (
+        cleanDef === cleanContainer ||
+        cleanDef.includes(cleanContainer) ||
+        cleanContainer.includes(cleanDef)
+      );
+    });
     if (!preferredUri || matched.length <= 1) {
       return matched;
     }
     const prefStr = preferredUri.toString();
+    const prefFsPath = typeof preferredUri === 'string' ? preferredUri : preferredUri.fsPath;
     return matched.slice().sort((a, b) => {
-      const aMatch = a.uri.toString() === prefStr ? 1 : 0;
-      const bMatch = b.uri.toString() === prefStr ? 1 : 0;
+      const aMatch =
+        a.uri.toString() === prefStr || (prefFsPath && a.uri.fsPath === prefFsPath) ? 1 : 0;
+      const bMatch =
+        b.uri.toString() === prefStr || (prefFsPath && b.uri.fsPath === prefFsPath) ? 1 : 0;
       return bMatch - aMatch;
     });
   }
@@ -548,11 +558,12 @@ export class SymbolIndexer implements vscode.Disposable {
    */
   public getSubClasses(baseClassName: string): string[] {
     const results: string[] = [];
-    const lowerBase = baseClassName.toLowerCase();
+    const cleanBase = baseClassName.toLowerCase().replace(/[^a-z0-9]/g, '');
     for (const [subClass] of this.classHierarchy) {
-      if (subClass.toLowerCase() === lowerBase) continue;
+      const cleanSub = subClass.toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (cleanSub === cleanBase) continue;
       const ancestors = this.getSuperClasses(subClass);
-      if (ancestors.some((a) => a.toLowerCase() === lowerBase)) {
+      if (ancestors.some((a) => a.toLowerCase().replace(/[^a-z0-9]/g, '') === cleanBase)) {
         results.push(subClass);
       }
     }

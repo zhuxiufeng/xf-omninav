@@ -210,6 +210,18 @@ export class NavigateCommand {
       }
     }
 
+    // If matching container definitions exist in the CURRENT document, prefer current document and drop other files:
+    if (containerHint && candidates.length > 1) {
+      const currentDocDefs = candidates.filter(
+        (d) =>
+          (d.uri.toString() === document.uri.toString() || d.uri.fsPath === document.uri.fsPath) &&
+          this.matchContainer(d.containerName, containerHint)
+      );
+      if (currentDocDefs.length > 0) {
+        candidates = currentDocDefs;
+      }
+    }
+
     // If multiple matches include both C implementation (.c/.cpp) and header (.h/.hpp),
     // prioritize the implementation file to jump directly without popup:
     const cImpls = candidates.filter((d) => /\.(?:c|cpp|cxx|cc)$/i.test(d.uri.fsPath));
