@@ -213,6 +213,15 @@ def main():
     log(f"Successfully installed {ext_id} v{version} to {installed_count} IDE extension root(s).", "DONE")
     log("Please press 'F1' -> 'Developer: Reload Window' in your editor to apply changes.", "INFO")
 
+    # Copy to Windows Desktop for easy marketplace web upload
+    desktop_dir = Path("/mnt/c/Users/sageb/Desktop")
+    if desktop_dir.is_dir():
+        try:
+            shutil.copy2(vsix_path, desktop_dir / vsix_path.name)
+            log(f"Copied {vsix_path.name} -> Windows Desktop ({desktop_dir})", "DONE")
+        except Exception as e:
+            log(f"Notice copying to desktop: {e}", "WARN")
+
 
 if __name__ == "__main__":
     main()
