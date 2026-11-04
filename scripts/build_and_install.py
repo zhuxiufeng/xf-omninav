@@ -175,13 +175,16 @@ def main():
 
     log(f"Installing {vsix_path.name} to target IDEs...", "INFO")
 
-    # Target directories to install
+    # Target directories to install (both WSL remote server and Windows client roots)
     home = Path.home()
     target_dirs = [
         home / ".antigravity-ide-server" / "extensions",
         home / ".antigravity-server" / "extensions",
         home / ".vscode-server" / "extensions",
         home / ".cursor-server" / "extensions",
+        Path("/mnt/c/Users/sageb/.antigravity-ide/extensions"),
+        Path("/mnt/c/Users/sageb/.vscode/extensions"),
+        Path("/mnt/c/Users/sageb/.cursor/extensions"),
     ]
 
     installed_count = 0
