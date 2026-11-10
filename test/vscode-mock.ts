@@ -290,6 +290,24 @@ export const languages = {
   onDidChangeDiagnostics(cb: any) {
     return languages.onDidChangeDiagnosticsEmitter.event(cb);
   },
+  createDiagnosticCollection(name?: string) {
+    return {
+      name,
+      set: (uri: Uri, diags: Diagnostic[]) => {
+        languages.diagnosticsMap.set(uri.toString(), diags);
+        languages.onDidChangeDiagnosticsEmitter.fire({ uris: [uri] });
+      },
+      delete: (uri: Uri) => {
+        languages.diagnosticsMap.delete(uri.toString());
+        languages.onDidChangeDiagnosticsEmitter.fire({ uris: [uri] });
+      },
+      clear: () => {
+        languages.diagnosticsMap.clear();
+        languages.onDidChangeDiagnosticsEmitter.fire({ uris: [] });
+      },
+      dispose: () => {},
+    };
+  },
   registerDefinitionProvider: () => ({ dispose: () => {} }),
   registerImplementationProvider: () => ({ dispose: () => {} }),
   registerCodeLensProvider: () => ({ dispose: () => {} }),

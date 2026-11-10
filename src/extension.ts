@@ -21,6 +21,7 @@ import { RustBranchFoldingProvider } from './folding/rustFoldingProvider';
 import { FoldingCache } from './folding/foldingCache';
 import { MermaidHierarchyExporter } from './visual/mermaidExporter';
 import { PyCharmFileErrorDecorator } from './visual/fileErrorDecorator';
+import { CallArgumentInspector } from './visual/callArgumentInspector';
 
 export function activate(context: vscode.ExtensionContext) {
   const outputChannel = vscode.window.createOutputChannel('XF OmniNav');
@@ -49,6 +50,10 @@ export function activate(context: vscode.ExtensionContext) {
     fileErrorDecorator,
     vscode.window.registerFileDecorationProvider(fileErrorDecorator)
   );
+
+  // PyCharm-style call argument inspector (checks parameter counts without type annotations)
+  const callArgumentInspector = new CallArgumentInspector(indexer);
+  context.subscriptions.push(callArgumentInspector);
 
   const codeLensProvider = new InheritanceCodeLensProvider();
   const inlayHintsProvider = new InheritanceInlayHintsProvider();
@@ -259,6 +264,37 @@ export function activate(context: vscode.ExtensionContext) {
       await config.update('fileErrorBadge', pick.value, vscode.ConfigurationTarget.Global);
       fileErrorDecorator.refreshAll();
       vscode.window.showInformationMessage(`XF OmniNav: 错误警号样式已切换为: ${pick.label}`);
+    }
+  });
+
+  registerMulti('toggleCallArgumentInspection', async () => {
+    const config = vscode.workspace.getConfiguration('xfOmniNav');
+    const current = config.get<boolean>('enableCallArgumentInspection', true);
+    await config.update('enableCallArgumentInspection', !current, vscode.ConfigurationTarget.Global);
+    if (vscode.window.activeTextEditor) {
+      callArgumentInspector.inspectDocument(vscode.window.activeTextEditor.document);
+    }
+    vscode.window.showInformationMessage(
+      `XF OmniNav: PyCharm 风格函数传参检查已${!current ? '开启' : '关闭'}`
+    );
+  });
+
+  registerMulti('setCallArgumentSeverity', async () => {
+    const config = vscode.workspace.getConfiguration('xfOmniNav');
+    const items = [
+      { label: 'Warning (黄色波浪线, 推荐)', description: '温和显眼的黄色警告提示', value: 'warning' },
+      { label: 'Error (红色波浪线, 强警示)', description: '直接标红报错，联动侧边栏与文件红色警号', value: 'error' },
+      { label: 'Information (蓝色提示线)', description: '仅作为信息提示', value: 'information' },
+    ];
+    const pick = await vscode.window.showQuickPick(items, {
+      placeHolder: '选择函数调用参数不匹配时的提示级别',
+    });
+    if (pick) {
+      await config.update('callArgumentSeverity', pick.value, vscode.ConfigurationTarget.Global);
+      if (vscode.window.activeTextEditor) {
+        callArgumentInspector.inspectDocument(vscode.window.activeTextEditor.document);
+      }
+      vscode.window.showInformationMessage(`XF OmniNav: 参数检查提示级别已切换为: ${pick.label}`);
     }
   });
 
@@ -521,6 +557,7 @@ export function activate(context: vscode.ExtensionContext) {
         const lang = editor.document.languageId;
         if (lang === 'python') {
           pythonFoldingProvider.fireDidChange();
+          callArgumentInspector.triggerInspect(editor);
         } else if (lang === 'shellscript') {
           shellFoldingProvider.fireDidChange();
         } else if (lang === 'c' || lang === 'cpp') {
@@ -552,6 +589,9 @@ export function activate(context: vscode.ExtensionContext) {
       const editor = vscode.window.activeTextEditor;
       if (editor && editor.document.uri.toString() === uriStr) {
         debouncedAnalysis(editor);
+        if (editor.document.languageId === 'python') {
+          callArgumentInspector.triggerInspect(editor);
+        }
       }
     }),
 
@@ -575,6 +615,7 @@ export function activate(context: vscode.ExtensionContext) {
       retriedDocs.delete(uriStr);
       codeLensProvider.clear(document.uri);
       inlayHintsProvider.clear(document.uri);
+      callArgumentInspector.clearDocument(document.uri);
       analyzer.clearFileCache(uriStr);
     }),
 
@@ -586,6 +627,9 @@ export function activate(context: vscode.ExtensionContext) {
         fileErrorDecorator.refreshAll();
         for (const editor of vscode.window.visibleTextEditors) {
           triggerAnalysis(editor, true);
+          if (editor.document.languageId === 'python') {
+            callArgumentInspector.triggerInspect(editor);
+          }
         }
       }
     })
@@ -608,11 +652,17 @@ export function activate(context: vscode.ExtensionContext) {
     indexer.indexDocument(vscode.window.activeTextEditor.document);
     updateIndexStatusBar(indexer.totalSymbols);
     triggerAnalysis(vscode.window.activeTextEditor, false, true);
+    if (vscode.window.activeTextEditor.document.languageId === 'python') {
+      callArgumentInspector.triggerInspect(vscode.window.activeTextEditor);
+    }
   }
 
   setTimeout(() => {
     indexer.indexWorkspace().then(() => {
       updateIndexStatusBar(indexer.totalSymbols);
+      if (vscode.window.activeTextEditor && vscode.window.activeTextEditor.document.languageId === 'python') {
+        callArgumentInspector.triggerInspect(vscode.window.activeTextEditor);
+      }
     });
   }, 1000);
 
