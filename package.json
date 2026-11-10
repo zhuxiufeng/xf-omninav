@@ -2,7 +2,7 @@
   "name": "xf-omninav",
   "displayName": "XF OmniNav",
   "description": "PyCharm-style silky-smooth omni symbol navigation, class & method inheritance hierarchy, gutter markers & 1-click CodeLens.",
-  "version": "1.0.26",
+  "version": "1.0.27",
   "publisher": "Vivian",
   "icon": "resources/icon.png",
   "repository": {
@@ -100,6 +100,16 @@
       {
         "command": "xfOmniNav.exportClassHierarchyMermaid",
         "title": "XF OmniNav: Export Class Hierarchy to Mermaid Diagram",
+        "category": "XF OmniNav"
+      },
+      {
+        "command": "xfOmniNav.toggleFileErrorDecoration",
+        "title": "XF OmniNav: Toggle File Error Decoration (PyCharm Style)",
+        "category": "XF OmniNav"
+      },
+      {
+        "command": "xfOmniNav.setFileErrorBadge",
+        "title": "XF OmniNav: Select File Error Badge Style",
         "category": "XF OmniNav"
       }
     ],
@@ -220,6 +230,21 @@
           "type": "number",
           "default": 300,
           "description": "Maximum number of symbols to analyze in a single file."
+        },
+        "xfOmniNav.enableFileErrorDecoration": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable PyCharm-style file error decoration: displays a red alert badge ('!') and highlights files and folders in red when they contain code errors."
+        },
+        "xfOmniNav.fileErrorBadge": {
+          "type": "string",
+          "default": "!",
+          "description": "Badge indicator displayed on files and parent directories containing errors (e.g. '!', '❗', '🔴', '⚠️', or 'none')."
+        },
+        "xfOmniNav.fileErrorPropagate": {
+          "type": "boolean",
+          "default": true,
+          "description": "Propagate error decorations up through the folder hierarchy to parent directories (PyCharm-style)."
         }
       }
     }

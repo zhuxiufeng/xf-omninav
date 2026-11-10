@@ -58,6 +58,25 @@ export class Location {
   constructor(public uri: Uri, public range: Range | Position) {}
 }
 
+export class ThemeColor {
+  constructor(public id: string) {}
+}
+
+export enum DiagnosticSeverity {
+  Error = 0,
+  Warning = 1,
+  Information = 2,
+  Hint = 3,
+}
+
+export class Diagnostic {
+  constructor(
+    public range: Range,
+    public message: string,
+    public severity: DiagnosticSeverity = DiagnosticSeverity.Error
+  ) {}
+}
+
 export class CodeLens {
   constructor(public range: Range, public command?: any) {}
 }
@@ -256,9 +275,21 @@ export const window = {
     dispose: () => {},
   }),
   withProgress: async (_opt: any, task: any) => await task(),
+  registerFileDecorationProvider: (_provider: any) => ({ dispose: () => {} }),
 };
 
 export const languages = {
+  diagnosticsMap: new Map<string, Diagnostic[]>(),
+  getDiagnostics(uri?: Uri) {
+    if (uri) {
+      return languages.diagnosticsMap.get(uri.toString()) || [];
+    }
+    return Array.from(languages.diagnosticsMap.entries()).map(([k, v]) => [Uri.parse(k), v]);
+  },
+  onDidChangeDiagnosticsEmitter: new EventEmitter<any>(),
+  onDidChangeDiagnostics(cb: any) {
+    return languages.onDidChangeDiagnosticsEmitter.event(cb);
+  },
   registerDefinitionProvider: () => ({ dispose: () => {} }),
   registerImplementationProvider: () => ({ dispose: () => {} }),
   registerCodeLensProvider: () => ({ dispose: () => {} }),

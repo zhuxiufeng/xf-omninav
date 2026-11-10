@@ -20,6 +20,7 @@ import { SwitchCaseFoldingProvider } from './folding/switchCaseFoldingProvider';
 import { RustBranchFoldingProvider } from './folding/rustFoldingProvider';
 import { FoldingCache } from './folding/foldingCache';
 import { MermaidHierarchyExporter } from './visual/mermaidExporter';
+import { PyCharmFileErrorDecorator } from './visual/fileErrorDecorator';
 
 export function activate(context: vscode.ExtensionContext) {
   const outputChannel = vscode.window.createOutputChannel('XF OmniNav');
@@ -41,6 +42,13 @@ export function activate(context: vscode.ExtensionContext) {
   const analyzer = new InheritanceAnalyzer();
   const decorator = new InheritanceDecorator(context);
   context.subscriptions.push(decorator);
+
+  // PyCharm-style file error decoration in project explorer
+  const fileErrorDecorator = new PyCharmFileErrorDecorator();
+  context.subscriptions.push(
+    fileErrorDecorator,
+    vscode.window.registerFileDecorationProvider(fileErrorDecorator)
+  );
 
   const codeLensProvider = new InheritanceCodeLensProvider();
   const inlayHintsProvider = new InheritanceInlayHintsProvider();
@@ -222,6 +230,36 @@ export function activate(context: vscode.ExtensionContext) {
   registerMulti('refreshFoldings', () => syncFoldingProviders(true));
   registerMulti('exportClassHierarchyMermaid', async (className?: string) => {
     await MermaidHierarchyExporter.exportClassHierarchy(indexer, className);
+  });
+
+  registerMulti('toggleFileErrorDecoration', async () => {
+    const config = vscode.workspace.getConfiguration('xfOmniNav');
+    const current = config.get<boolean>('enableFileErrorDecoration', true);
+    await config.update('enableFileErrorDecoration', !current, vscode.ConfigurationTarget.Global);
+    fileErrorDecorator.refreshAll();
+    vscode.window.showInformationMessage(
+      `XF OmniNav: 文件错误警号标记已${!current ? '开启' : '关闭'}`
+    );
+  });
+
+  registerMulti('setFileErrorBadge', async () => {
+    const config = vscode.workspace.getConfiguration('xfOmniNav');
+    const items = [
+      { label: '! (经典感叹号)', description: '推荐：经典 PyCharm 错误感叹号，高亮红', value: '!' },
+      { label: '❗ (红色警号 Emoji)', description: '显眼醒目的红色警号 Emoji 图标', value: '❗' },
+      { label: '🔴 (红点警号)', description: '紧凑型实心红点', value: '🔴' },
+      { label: '⚠️ (警告三角)', description: '醒目的三角警告图标', value: '⚠️' },
+      { label: 'E (字母 E)', description: '字母 Error 缩写', value: 'E' },
+      { label: 'none (仅文字变红)', description: '不显示角标字符，仅将文件名变为错误红', value: 'none' },
+    ];
+    const pick = await vscode.window.showQuickPick(items, {
+      placeHolder: '选择文件代码错误（标红）时显示的警号样式',
+    });
+    if (pick) {
+      await config.update('fileErrorBadge', pick.value, vscode.ConfigurationTarget.Global);
+      fileErrorDecorator.refreshAll();
+      vscode.window.showInformationMessage(`XF OmniNav: 错误警号样式已切换为: ${pick.label}`);
+    }
   });
 
   // Inheritance Commands
@@ -545,6 +583,7 @@ export function activate(context: vscode.ExtensionContext) {
         syncFoldingProviders();
         decorator.createDecorationTypes();
         codeLensProvider.clear();
+        fileErrorDecorator.refreshAll();
         for (const editor of vscode.window.visibleTextEditors) {
           triggerAnalysis(editor, true);
         }
