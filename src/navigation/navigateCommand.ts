@@ -402,7 +402,7 @@ export class NavigateCommand {
   ): SymbolDefinition[] {
     let exact = this.indexer.findExact(symbolName);
     if (exact.length === 0) {
-      exact = this.indexer.findFuzzy(symbolName);
+      exact = this.indexer.findExactCaseInsensitive(symbolName);
     }
 
     const currentDocStr = currentDocUri?.toString();

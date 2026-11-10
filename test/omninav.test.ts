@@ -1397,6 +1397,38 @@ class BoxAction:
       workspace.textDocuments = origDocs;
     }
   });
+
+  it('should strictly isolate exact definition and NEVER pollute with prefix matches (replace_nozzle vs replace_nozzle_process)', async () => {
+    const nanoCode = `class BoxAction:
+    def replace_nozzle_process(self, vtnn):
+        self.replace_nozzle_gear_shifting_callback = None
+        self.replace_nozzle_gear_shifting_callback_completion = None
+        nozzle_manager = self.printer.lookup_object('nozzle_manager')
+        ret = nozzle_manager.replace_nozzle(nozzle_num)
+`;
+    const nanoDoc = new MockTextDocument(nanoCode, '/app/box_nano_wrapper.py', 'python');
+    const nozzleCode = `class NOZZLE_MANAGER:
+    def replace_nozzle(self, num, err_shutdown=True):
+        pass
+`;
+    const nozzleDoc = new MockTextDocument(nozzleCode, '/app/nozzle_manager_wrapper.py', 'python');
+
+    const indexer = new SymbolIndexer({ subscriptions: [] } as any);
+    await indexer.indexDocument(nanoDoc as any);
+    await indexer.indexDocument(nozzleDoc as any);
+
+    const provider = new SmoothDefinitionProvider(indexer);
+    // Position on replace_nozzle at line 5
+    const pos = new Position(5, 35);
+    const result = await provider.provideDefinition(nanoDoc as any, pos as any, {} as any);
+
+    assert.ok(result, 'Must find definition for replace_nozzle');
+    assert.strictEqual(result.length, 1, 'Must return EXACTLY 1 definition without prefix pollution');
+    assert.strictEqual(result[0].targetUri.fsPath, '/app/nozzle_manager_wrapper.py', 'Must target nozzle_manager_wrapper.py');
+    assert.strictEqual(result[0].targetRange.start.line, 1, 'Must target line 1 def replace_nozzle in nozzle_manager_wrapper.py');
+
+    indexer.dispose();
+  });
 });
 
 

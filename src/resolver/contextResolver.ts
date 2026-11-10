@@ -208,6 +208,8 @@ export class ContextResolver {
       new RegExp(`(?:def|function)\\s+[A-Za-z0-9_]+\\s*\\(.*?[\\s,]${escaped}\\s*:\\s*([A-Z][A-Za-z0-9_]*)`),
       // (x as Dog)
       new RegExp(`\\(${escaped}\\s+as\\s+([A-Z][A-Za-z0-9_]*)\\)`),
+      // Klipper lookup_object: nozzle_manager = self.printer.lookup_object('nozzle_manager') or lookup_object("box")
+      new RegExp(`${escaped}\\s*=\\s*.*?lookup_object\\s*\\(\\s*['"]([A-Za-z0-9_]+)['"]`),
     ];
 
     const minLine = Math.max(0, callLine - 60);

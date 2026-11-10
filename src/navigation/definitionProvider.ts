@@ -1,11 +1,14 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
+import * as fs from 'fs';
+import * as cp from 'child_process';
 import { SymbolIndexer } from '../indexer/symbolIndexer';
 import { ImportResolver } from '../resolver/importResolver';
 import { VenvResolver } from '../resolver/venvResolver';
 import { UsageResolver } from '../resolver/usageResolver';
 import { ContextResolver, ReceiverInfo } from '../resolver/contextResolver';
 import { SymbolDefinition } from '../types';
-import { getOmniConfig } from '../utils';
+import { getOmniConfig, getRipgrepPath } from '../utils';
 
 export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
   private static isQueryingLsp = false;
@@ -187,7 +190,7 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
     }
 
     // 4. Query our workspace symbol index
-    let matchedDefs = this.findCandidates(symbolName, containerHint, document.uri, receiver);
+    let matchedDefs = await this.findCandidates(symbolName, containerHint, document.uri, receiver);
 
     // If containerHint matched, filter to container matches to avoid ambiguous peek popups
     if (containerHint) {
@@ -432,16 +435,25 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
    * 4. Same folder definitions
    * 5. Workspace definitions
    */
-  private findCandidates(
+  private async findCandidates(
     symbolName: string,
     containerHint?: string,
     currentDocUri?: vscode.Uri,
     receiver?: ReceiverInfo
-  ): SymbolDefinition[] {
+  ): Promise<SymbolDefinition[]> {
     let exact = this.indexer.findExact(symbolName);
 
     if (exact.length === 0) {
-      exact = this.indexer.findFuzzy(symbolName);
+      // 1. Exact case-insensitive match (e.g. nozzle_manager vs NOZZLE_MANAGER)
+      exact = this.indexer.findExactCaseInsensitive(symbolName);
+    }
+
+    if (exact.length === 0 && currentDocUri) {
+      // 2. On-demand discovery of un-indexed sibling or workspace files
+      const discovered = await this.fastDiscoverDefinition(symbolName, currentDocUri, receiver);
+      if (discovered.length > 0) {
+        exact = discovered;
+      }
     }
 
     if (exact.length === 0) {
@@ -498,6 +510,108 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
       const bIsCImpl = /\.(?:c|cpp|cxx|cc)$/i.test(b.uri.fsPath) ? 1 : 0;
       return bIsCImpl - aIsCImpl;
     });
+  }
+
+  /**
+   * Fast on-demand file discovery for symbols not yet indexed in memory.
+   */
+  private async fastDiscoverDefinition(
+    symbolName: string,
+    currentDocUri: vscode.Uri,
+    receiver?: ReceiverInfo
+  ): Promise<SymbolDefinition[]> {
+    if (currentDocUri.scheme !== 'file') return [];
+
+    // 1. Sibling file discovery: check files in the same directory first
+    try {
+      const currentDir = path.dirname(currentDocUri.fsPath);
+      if (fs.existsSync(currentDir)) {
+        const files = await fs.promises.readdir(currentDir);
+        const candidates: string[] = [];
+        const varName = receiver?.varName?.toLowerCase();
+        for (const file of files) {
+          if (
+            !file.endsWith('.py') &&
+            !file.endsWith('.ts') &&
+            !file.endsWith('.js') &&
+            !file.endsWith('.c') &&
+            !file.endsWith('.cpp')
+          ) {
+            continue;
+          }
+          const fullPath = path.join(currentDir, file);
+          if (fullPath === currentDocUri.fsPath) continue;
+
+          if (varName && file.toLowerCase().includes(varName)) {
+            candidates.unshift(fullPath);
+          } else {
+            candidates.push(fullPath);
+          }
+        }
+
+        const checkLimit = Math.min(candidates.length, 10);
+        for (let i = 0; i < checkLimit; i++) {
+          const filePath = candidates[i];
+          const uriStr = vscode.Uri.file(filePath).toString();
+          if (this.indexer.hasFile(uriStr)) continue;
+
+          const content = await fs.promises.readFile(filePath, 'utf8');
+          if (content.includes(symbolName)) {
+            this.indexer.indexFile(vscode.Uri.file(filePath), content);
+            const found = this.indexer.findExact(symbolName);
+            if (found.length > 0) {
+              return found;
+            }
+          }
+        }
+      }
+    } catch {}
+
+    // 2. Ripgrep workspace discovery
+    const rgPath = getRipgrepPath();
+    if (rgPath) {
+      try {
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(currentDocUri);
+        const rootPath = workspaceFolder
+          ? workspaceFolder.uri.fsPath
+          : path.dirname(currentDocUri.fsPath);
+        const escaped = symbolName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const pattern = `^\\s*(?:async\\s+)?def\\s+${escaped}\\b|^\\s*class\\s+${escaped}\\b`;
+
+        const stdout = await new Promise<string>((resolve) => {
+          cp.execFile(
+            rgPath,
+            ['-l', '--max-count', '1', pattern, rootPath],
+            { timeout: 800, maxBuffer: 1024 * 512 },
+            (err, out) => {
+              if (err || !out) resolve('');
+              else resolve(out);
+            }
+          );
+        });
+
+        if (stdout) {
+          const lines = stdout
+            .split(/\r?\n/)
+            .map((l) => l.trim())
+            .filter(Boolean);
+          for (const matchedPath of lines.slice(0, 5)) {
+            const uriStr = vscode.Uri.file(matchedPath).toString();
+            if (this.indexer.hasFile(uriStr)) continue;
+            try {
+              const content = await fs.promises.readFile(matchedPath, 'utf8');
+              this.indexer.indexFile(vscode.Uri.file(matchedPath), content);
+              const found = this.indexer.findExact(symbolName);
+              if (found.length > 0) {
+                return found;
+              }
+            } catch {}
+          }
+        }
+      } catch {}
+    }
+
+    return [];
   }
 
   /**

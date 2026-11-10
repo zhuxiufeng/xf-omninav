@@ -431,6 +431,20 @@ export class SymbolIndexer implements vscode.Disposable {
   }
 
   /**
+   * Find definitions by case-insensitive exact symbol name.
+   */
+  public findExactCaseInsensitive(name: string): SymbolDefinition[] {
+    return this.lowerMap.get(name.toLowerCase()) || [];
+  }
+
+  /**
+   * Check if a file URI has already been indexed.
+   */
+  public hasFile(uriStr: string): boolean {
+    return this.fileMap.has(uriStr);
+  }
+
+  /**
    * Find definitions by container (class name) and symbol name.
    * e.g. container = "User", method = "login", or snake_case "box_action" -> "BoxAction"
    */
