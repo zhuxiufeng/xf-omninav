@@ -83,19 +83,48 @@ const PYTHON_BUILTINS = new Set([
  */
 export class CallArgumentInspector implements vscode.Disposable {
   private diagnosticCollection: vscode.DiagnosticCollection;
+  private errorDecorationType: vscode.TextEditorDecorationType;
   private disposables: vscode.Disposable[] = [];
   private debouncedInspect: ((editor: vscode.TextEditor) => void) & { cancel: () => void };
   private sigCache = new Map<string, FunctionSignatureInfo | null>();
+  private lastDecorations = new Map<string, vscode.DecorationOptions[]>();
 
   constructor(private readonly indexer: SymbolIndexer) {
     this.diagnosticCollection =
       vscode.languages.createDiagnosticCollection('xfOmniNav-callArgs');
 
+    this.errorDecorationType = vscode.window.createTextEditorDecorationType({
+      backgroundColor: 'rgba(255, 50, 50, 0.18)',
+      border: '1px solid rgba(255, 65, 65, 0.75)',
+      borderRadius: '3px',
+      textDecoration: 'underline wavy #ff3333 2px',
+      overviewRulerColor: '#ff2222',
+      overviewRulerLane: vscode.OverviewRulerLane.Right,
+      light: {
+        backgroundColor: 'rgba(255, 0, 0, 0.12)',
+        border: '1px solid rgba(220, 38, 38, 0.7)',
+      },
+      dark: {
+        backgroundColor: 'rgba(255, 50, 50, 0.22)',
+        border: '1px solid rgba(248, 113, 113, 0.75)',
+      },
+    });
+
     this.debouncedInspect = debounce((editor: vscode.TextEditor) => {
       this.inspectDocument(editor.document);
     }, 250);
 
-    this.disposables.push(this.diagnosticCollection);
+    if (vscode.window.onDidChangeVisibleTextEditors) {
+      this.disposables.push(
+        vscode.window.onDidChangeVisibleTextEditors((editors) => {
+          for (const editor of editors) {
+            this.applyStoredDecorations(editor);
+          }
+        })
+      );
+    }
+
+    this.disposables.push(this.diagnosticCollection, this.errorDecorationType);
   }
 
   /**
@@ -353,18 +382,20 @@ export class CallArgumentInspector implements vscode.Disposable {
 
     const isEnabled = getOmniConfig<boolean>('enableCallArgumentInspection', true);
     if (!isEnabled) {
-      this.diagnosticCollection.delete(document.uri);
+      this.clearDocument(document.uri);
       return [];
     }
 
-    const severityStr = getOmniConfig<string>('callArgumentSeverity', 'warning');
+    const severityStr = getOmniConfig<string>('callArgumentSeverity', 'error');
     const severity =
-      severityStr === 'error'
-        ? vscode.DiagnosticSeverity.Error
+      severityStr === 'warning'
+        ? vscode.DiagnosticSeverity.Warning
         : severityStr === 'information'
         ? vscode.DiagnosticSeverity.Information
-        : vscode.DiagnosticSeverity.Warning;
+        : vscode.DiagnosticSeverity.Error;
 
+    const enableHighlight = getOmniConfig<boolean>('enableCallArgumentHighlight', true);
+    const decorations: vscode.DecorationOptions[] = [];
     const diagnostics: vscode.Diagnostic[] = [];
     const text = document.getText();
     const lines = text.split(/\r?\n/);
@@ -475,20 +506,65 @@ export class CallArgumentInspector implements vscode.Disposable {
                 )
               : callArgs.argRange;
 
+          const errorMsg = `'${methodName}' 最多接收 ${maxAllowed} 个位置参数，但实际传入了 ${callArgs.positionalCount} 个 (PyCharm 风格参数检查)`;
           const diag = new vscode.Diagnostic(
             targetRange,
-            `XF OmniNav: '${methodName}' 最多接收 ${maxAllowed} 个位置参数，但实际传入了 ${callArgs.positionalCount} 个 (PyCharm 风格参数检查)`,
+            `XF OmniNav: ${errorMsg}`,
             severity
           );
           diag.source = 'XF OmniNav';
           diag.code = 'too-many-arguments';
           diagnostics.push(diag);
+
+          if (enableHighlight) {
+            decorations.push({
+              range: targetRange,
+              hoverMessage: new vscode.MarkdownString(
+                `**XF OmniNav: 参数错误 (PyCharm 风格)**\n\n\`${methodName}\` 最多接收 **${maxAllowed}** 个位置参数，但实际传入了 **${callArgs.positionalCount}** 个。`
+              ),
+              renderOptions: {
+                after: {
+                  contentText: ` ❗参数错误: 期望 ≤${maxAllowed} 个，实传 ${callArgs.positionalCount} 个`,
+                  color: '#ff4d4f',
+                  fontWeight: 'bold',
+                  fontStyle: 'normal',
+                  margin: '0 0 0 8px',
+                },
+              },
+            });
+          }
         }
       }
     }
 
     this.diagnosticCollection.set(document.uri, diagnostics);
+    this.lastDecorations.set(document.uri.toString(), decorations);
+    this.applyDecorationsToDocument(document.uri, decorations);
     return diagnostics;
+  }
+
+  private applyDecorationsToDocument(
+    uri: vscode.Uri,
+    decorations: vscode.DecorationOptions[]
+  ): void {
+    const uriStr = uri.toString();
+    if (vscode.window.visibleTextEditors) {
+      for (const editor of vscode.window.visibleTextEditors) {
+        if (editor.document && editor.document.uri.toString() === uriStr) {
+          if (typeof editor.setDecorations === 'function') {
+            editor.setDecorations(this.errorDecorationType, decorations);
+          }
+        }
+      }
+    }
+  }
+
+  public applyStoredDecorations(editor: vscode.TextEditor): void {
+    if (!editor || !editor.document) return;
+    const decorations = this.lastDecorations.get(editor.document.uri.toString());
+    if (decorations && typeof editor.setDecorations === 'function') {
+      editor.setDecorations(this.errorDecorationType, decorations);
+    }
   }
 
   public triggerInspect(editor: vscode.TextEditor): void {
@@ -499,17 +575,30 @@ export class CallArgumentInspector implements vscode.Disposable {
 
   public clearDocument(uri: vscode.Uri): void {
     this.diagnosticCollection.delete(uri);
+    this.lastDecorations.delete(uri.toString());
+    this.applyDecorationsToDocument(uri, []);
   }
 
   public clearAll(): void {
     this.diagnosticCollection.clear();
     this.sigCache.clear();
+    for (const uriStr of this.lastDecorations.keys()) {
+      if (vscode.window.visibleTextEditors) {
+        for (const editor of vscode.window.visibleTextEditors) {
+          if (editor.document && editor.document.uri.toString() === uriStr) {
+            if (typeof editor.setDecorations === 'function') {
+              editor.setDecorations(this.errorDecorationType, []);
+            }
+          }
+        }
+      }
+    }
+    this.lastDecorations.clear();
   }
 
   dispose(): void {
     this.debouncedInspect.cancel();
-    this.diagnosticCollection.clear();
-    this.sigCache.clear();
+    this.clearAll();
     for (const d of this.disposables) {
       d.dispose();
     }

@@ -62,6 +62,17 @@ export class ThemeColor {
   constructor(public id: string) {}
 }
 
+export class MarkdownString {
+  constructor(public value: string = '') {}
+}
+
+export enum OverviewRulerLane {
+  Left = 1,
+  Center = 2,
+  Right = 4,
+  Full = 7,
+}
+
 export enum DiagnosticSeverity {
   Error = 0,
   Warning = 1,
@@ -244,9 +255,14 @@ export const workspace = {
 
 export const window = {
   activeTextEditor: undefined as any,
+  visibleTextEditors: [] as any[],
   showInformationMessage: async () => undefined,
   showWarningMessage: async () => undefined,
   showQuickPick: async () => undefined,
+  createTextEditorDecorationType: (_opt: any) => ({
+    key: 'mock-dec',
+    dispose: () => {},
+  }),
   createQuickPick: () => ({
     title: '',
     placeholder: '',
@@ -276,6 +292,7 @@ export const window = {
   }),
   withProgress: async (_opt: any, task: any) => await task(),
   registerFileDecorationProvider: (_provider: any) => ({ dispose: () => {} }),
+  onDidChangeVisibleTextEditors: (_cb: any) => ({ dispose: () => {} }),
 };
 
 export const languages = {

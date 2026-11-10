@@ -66,6 +66,7 @@ test('CallArgumentInspector tests', async (t) => {
 
     const diagnostics = inspector.inspectDocument(callerDoc);
     assert.equal(diagnostics.length, 1, 'Should produce exactly 1 diagnostic for the invalid call');
+    assert.equal(diagnostics[0].severity, vscode.DiagnosticSeverity.Error, 'Default severity should be Error for prominent red highlight');
     assert.ok(diagnostics[0].message.includes("'_is_nano_pro' 最多接收 0 个位置参数"));
     assert.ok(diagnostics[0].message.includes('实际传入了 1 个'));
     assert.equal(diagnostics[0].source, 'XF OmniNav');
@@ -84,6 +85,47 @@ test('CallArgumentInspector tests', async (t) => {
 
     const diagnostics = inspector.inspectDocument(validCallerDoc);
     assert.equal(diagnostics.length, 0, 'Valid call with 0 arguments should produce 0 diagnostics');
+  });
+
+  await t.test('inspectDocument: should detect nozzle_manager.replace_nozzle excess arguments and apply prominent red decorations', async () => {
+    const nozzleDefDoc = new (vscode as any).MockTextDocument(
+      `class NozzleManager:
+    def replace_nozzle(self, nozzle_num):
+        pass
+`,
+      '/workspace/nozzle_manager.py',
+      'python'
+    );
+    await indexer.indexDocument(nozzleDefDoc);
+
+    const callerDoc = new (vscode as any).MockTextDocument(
+      `def run_replace(self):
+    ret = nozzle_manager.replace_nozzle(nozzle_num, 3)
+    return ret
+`,
+      '/workspace/caller_nozzle.py',
+      'python'
+    );
+
+    let decoratedRanges: any[] = [];
+    const mockEditor = {
+      document: callerDoc,
+      setDecorations: (_type: any, ranges: any[]) => {
+        decoratedRanges = ranges;
+      },
+    };
+    (vscode.window as any).visibleTextEditors = [mockEditor];
+
+    const diagnostics = inspector.inspectDocument(callerDoc);
+    assert.equal(diagnostics.length, 1);
+    assert.equal(diagnostics[0].severity, vscode.DiagnosticSeverity.Error);
+    assert.ok(diagnostics[0].message.includes("'replace_nozzle' 最多接收 1 个位置参数"));
+    assert.ok(diagnostics[0].message.includes('实际传入了 2 个'));
+
+    assert.equal(decoratedRanges.length, 1, 'Should set prominent decoration on active editor');
+    assert.ok(decoratedRanges[0].renderOptions.after.contentText.includes('❗参数错误: 期望 ≤1 个，实传 2 个'));
+
+    (vscode.window as any).visibleTextEditors = [];
   });
 
   inspector.dispose();

@@ -37,7 +37,7 @@ test('PyCharmFileErrorDecorator tests', async (t) => {
   await t.test('should decorate file with error badge and red error color when DiagnosticSeverity.Error is present', () => {
     const decoration = decorator.provideFileDecoration(uriWithErrors, {} as any) as any;
     assert.ok(decoration, 'Should return file decoration for file with errors');
-    assert.equal(decoration.badge, '!', 'Default badge should be "!"');
+    assert.equal(decoration.badge, '❗', 'Default badge should be "❗"');
     assert.equal(decoration.propagate, true, 'Propagate should be true to bubble to parent folders');
     assert.ok(decoration.color, 'ThemeColor should be defined');
     assert.equal((decoration.color as any).id, 'list.errorForeground');

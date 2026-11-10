@@ -2,7 +2,7 @@
   "name": "xf-omninav",
   "displayName": "XF OmniNav",
   "description": "PyCharm-style silky-smooth omni symbol navigation, class & method inheritance hierarchy, gutter markers & 1-click CodeLens.",
-  "version": "1.0.29",
+  "version": "1.0.30",
   "publisher": "Vivian",
   "icon": "resources/icon.png",
   "repository": {
@@ -248,8 +248,8 @@
         },
         "xfOmniNav.fileErrorBadge": {
           "type": "string",
-          "default": "!",
-          "description": "Badge indicator displayed on files and parent directories containing errors (e.g. '!', '❗', '🔴', '⚠️', or 'none')."
+          "default": "❗",
+          "description": "Badge indicator displayed on files and parent directories containing errors (e.g. '❗', '🔴', '!', or 'none')."
         },
         "xfOmniNav.fileErrorPropagate": {
           "type": "boolean",
@@ -264,12 +264,17 @@
         "xfOmniNav.callArgumentSeverity": {
           "type": "string",
           "enum": [
-            "warning",
             "error",
+            "warning",
             "information"
           ],
-          "default": "warning",
-          "description": "Severity of argument mismatch diagnostics: 'warning' shows yellow squiggly underline, 'error' shows red squiggly underline and triggers file error decorations."
+          "default": "error",
+          "description": "Severity of argument mismatch diagnostics: 'error' (default) shows prominent red highlight and triggers file error decorations, 'warning' shows yellow squiggly underline, 'information' shows info hints."
+        },
+        "xfOmniNav.enableCallArgumentHighlight": {
+          "type": "boolean",
+          "default": true,
+          "description": "Render prominent PyCharm-style red background tint, border, and inline error hint for argument mismatches in the active editor."
         }
       }
     }

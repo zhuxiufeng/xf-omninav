@@ -146,7 +146,7 @@ export class PyCharmFileErrorDecorator implements vscode.FileDecorationProvider,
       return undefined;
     }
 
-    const rawBadge = getOmniConfig<string>('fileErrorBadge', '!');
+    const rawBadge = getOmniConfig<string>('fileErrorBadge', '❗');
     const propagate = getOmniConfig<boolean>('fileErrorPropagate', true);
 
     let badge: string | undefined = undefined;
