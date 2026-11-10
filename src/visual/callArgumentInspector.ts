@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { SymbolIndexer } from '../indexer/symbolIndexer';
 import { SymbolDefinition } from '../types';
-import { getOmniConfig, debounce } from '../utils';
+import { getOmniConfig, debounce, ICON_DATA_URIS } from '../utils';
 
 export interface ParamSpec {
   name: string;
@@ -20,11 +20,33 @@ export interface FunctionSignatureInfo {
   params: ParamSpec[];
 }
 
+export interface RawArgumentItem {
+  text: string;
+  isKeyword: boolean;
+  keywordName?: string;
+  valueText?: string;
+  range: vscode.Range;
+  removalRange: vscode.Range;
+}
+
 export interface CallArgumentResult {
   positionalCount: number;
   keywords: string[];
+  items: RawArgumentItem[];
   hasUnpack: boolean;
   argRange: vscode.Range;
+  openParenPos: vscode.Position;
+  closeParenPos: vscode.Position;
+  parenRange: vscode.Range;
+}
+
+export interface ParsedCallInfo {
+  receiver?: string;
+  methodName: string;
+  callArgs: CallArgumentResult;
+  targetRange: vscode.Range;
+  candidateDefs: SymbolDefinition[];
+  sigInfos: FunctionSignatureInfo[];
 }
 
 const PYTHON_BUILTINS = new Set([
@@ -78,8 +100,8 @@ const PYTHON_BUILTINS = new Set([
 
 /**
  * PyCharm-style Heuristic Call Arguments Inspector.
- * Detects mismatched argument counts on function and method calls in Python
- * even when variables have no type annotations (such as dynamic lookup_object).
+ * Detects mismatched argument counts, missing required parameters, and unexpected keywords
+ * in Python even when variables have no type annotations (such as dynamic Klipper lookup_object).
  */
 export class CallArgumentInspector implements vscode.Disposable {
   private diagnosticCollection: vscode.DiagnosticCollection;
@@ -88,6 +110,7 @@ export class CallArgumentInspector implements vscode.Disposable {
   private debouncedInspect: ((editor: vscode.TextEditor) => void) & { cancel: () => void };
   private sigCache = new Map<string, FunctionSignatureInfo | null>();
   private lastDecorations = new Map<string, vscode.DecorationOptions[]>();
+  private lastCalls = new Map<string, ParsedCallInfo[]>();
 
   constructor(private readonly indexer: SymbolIndexer) {
     this.diagnosticCollection =
@@ -98,6 +121,8 @@ export class CallArgumentInspector implements vscode.Disposable {
       border: '1px solid rgba(255, 65, 65, 0.75)',
       borderRadius: '3px',
       textDecoration: 'underline wavy #ff3333 2px',
+      gutterIconPath: vscode.Uri.parse(ICON_DATA_URIS.error_badge),
+      gutterIconSize: 'contain',
       overviewRulerColor: '#ff2222',
       overviewRulerLane: vscode.OverviewRulerLane.Right,
       light: {
@@ -237,7 +262,7 @@ export class CallArgumentInspector implements vscode.Disposable {
       maxPositional: maxPos,
       hasVarargs,
       hasVarkwargs,
-      params: positionalParams,
+      params: positionalParams.concat(keywordOnlyParams),
     };
 
     if (this.sigCache.size >= 1024) {
@@ -304,72 +329,171 @@ export class CallArgumentInspector implements vscode.Disposable {
 
     if (!foundEnd) return null;
 
+    const openParenPos = new vscode.Position(lineIdx, openParenChar);
+    const closeParenPos = new vscode.Position(endLine, endCol);
+    const parenRange = new vscode.Range(openParenPos, new vscode.Position(endLine, endCol + 1));
     const argRange = new vscode.Range(
       new vscode.Position(lineIdx, openParenChar + 1),
-      new vscode.Position(endLine, endCol)
+      closeParenPos
     );
 
     const trimmed = argText.trim();
     if (!trimmed) {
-      return { positionalCount: 0, keywords: [], hasUnpack: false, argRange };
+      return {
+        positionalCount: 0,
+        keywords: [],
+        items: [],
+        hasUnpack: false,
+        argRange,
+        openParenPos,
+        closeParenPos,
+        parenRange,
+      };
     }
 
-    // Split args by top-level comma
-    const rawArgs: string[] = [];
+    // Split args by top-level comma and track offsets
+    interface ChunkOffset {
+      start: number;
+      end: number;
+      hasPrevComma: boolean;
+      commaIndex?: number;
+    }
+    const chunks: ChunkOffset[] = [];
     depth = 0;
-    let cur = '';
     inQuote = null;
-    for (let i = 0; i < trimmed.length; i++) {
-      const ch = trimmed[i];
+    let chunkStart = 0;
+    let lastCommaIdx = -1;
+
+    for (let i = 0; i < argText.length; i++) {
+      const ch = argText[i];
       if (inQuote) {
-        if (ch === inQuote && trimmed[i - 1] !== '\\') inQuote = null;
-        cur += ch;
+        if (ch === inQuote && argText[i - 1] !== '\\') inQuote = null;
         continue;
       }
       if (ch === '"' || ch === "'") {
         inQuote = ch;
-        cur += ch;
         continue;
       }
       if (ch === '(' || ch === '[' || ch === '{') depth++;
       else if (ch === ')' || ch === ']' || ch === '}') depth--;
       else if (ch === ',' && depth === 0) {
-        if (cur.trim()) rawArgs.push(cur.trim());
-        cur = '';
-        continue;
+        chunks.push({
+          start: chunkStart,
+          end: i,
+          hasPrevComma: lastCommaIdx !== -1,
+          commaIndex: lastCommaIdx,
+        });
+        lastCommaIdx = i;
+        chunkStart = i + 1;
       }
-      cur += ch;
     }
-    if (cur.trim()) rawArgs.push(cur.trim());
+    chunks.push({
+      start: chunkStart,
+      end: argText.length,
+      hasPrevComma: lastCommaIdx !== -1,
+      commaIndex: lastCommaIdx,
+    });
 
+    const items: RawArgumentItem[] = [];
     let positionalCount = 0;
     const keywords: string[] = [];
     let hasUnpack = false;
 
-    for (const arg of rawArgs) {
-      if (arg.startsWith('*') || arg.startsWith('**')) {
-        hasUnpack = true;
-        continue;
-      }
-      const eqIdx = arg.indexOf('=');
-      if (
-        eqIdx > 0 &&
-        arg[eqIdx - 1] !== '=' &&
-        arg[eqIdx - 1] !== '!' &&
-        arg[eqIdx - 1] !== '<' &&
-        arg[eqIdx - 1] !== '>' &&
-        arg[eqIdx + 1] !== '='
-      ) {
-        const kw = arg.slice(0, eqIdx).trim();
-        if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(kw)) {
-          keywords.push(kw);
-          continue;
+    const offsetToPos = (offset: number): vscode.Position => {
+      let l = lineIdx;
+      let c = openParenChar + 1;
+      for (let i = 0; i < offset && i < argText.length; i++) {
+        if (argText[i] === '\n') {
+          l++;
+          c = 0;
+        } else {
+          c++;
         }
       }
-      positionalCount++;
+      return new vscode.Position(l, c);
+    };
+
+    for (let idx = 0; idx < chunks.length; idx++) {
+      const chunk = chunks[idx];
+      const rawPiece = argText.slice(chunk.start, chunk.end);
+      const trimmedPiece = rawPiece.trim();
+      if (!trimmedPiece) continue;
+
+      const leadingMatch = rawPiece.match(/^\s*/);
+      const leadingLen = leadingMatch ? leadingMatch[0].length : 0;
+      const trailingMatch = rawPiece.match(/\s*$/);
+      const trailingLen = trailingMatch ? trailingMatch[0].length : 0;
+
+      const itemStartOffset = chunk.start + leadingLen;
+      const itemEndOffset = chunk.end - trailingLen;
+
+      const itemRange = new vscode.Range(
+        offsetToPos(itemStartOffset),
+        offsetToPos(itemEndOffset)
+      );
+
+      // Calculate clean removalRange for QuickFix
+      let removalRange: vscode.Range;
+      if (chunk.hasPrevComma && chunk.commaIndex !== undefined && chunk.commaIndex >= 0) {
+        removalRange = new vscode.Range(offsetToPos(chunk.commaIndex), offsetToPos(itemEndOffset));
+      } else if (idx < chunks.length - 1) {
+        removalRange = new vscode.Range(offsetToPos(itemStartOffset), offsetToPos(chunks[idx + 1].start));
+      } else {
+        removalRange = itemRange;
+      }
+
+      if (trimmedPiece.startsWith('*') || trimmedPiece.startsWith('**')) {
+        hasUnpack = true;
+      }
+
+      let isKeyword = false;
+      let keywordName: string | undefined = undefined;
+      let valueText: string | undefined = undefined;
+
+      if (!trimmedPiece.startsWith('*')) {
+        const eqIdx = trimmedPiece.indexOf('=');
+        if (
+          eqIdx > 0 &&
+          trimmedPiece[eqIdx - 1] !== '=' &&
+          trimmedPiece[eqIdx - 1] !== '!' &&
+          trimmedPiece[eqIdx - 1] !== '<' &&
+          trimmedPiece[eqIdx - 1] !== '>' &&
+          trimmedPiece[eqIdx + 1] !== '='
+        ) {
+          const kw = trimmedPiece.slice(0, eqIdx).trim();
+          if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(kw)) {
+            isKeyword = true;
+            keywordName = kw;
+            valueText = trimmedPiece.slice(eqIdx + 1).trim();
+            keywords.push(kw);
+          }
+        }
+      }
+
+      if (!isKeyword && !trimmedPiece.startsWith('*')) {
+        positionalCount++;
+      }
+
+      items.push({
+        text: trimmedPiece,
+        isKeyword,
+        keywordName,
+        valueText,
+        range: itemRange,
+        removalRange,
+      });
     }
 
-    return { positionalCount, keywords, hasUnpack, argRange };
+    return {
+      positionalCount,
+      keywords,
+      items,
+      hasUnpack,
+      argRange,
+      openParenPos,
+      closeParenPos,
+      parenRange,
+    };
   }
 
   /**
@@ -395,8 +519,13 @@ export class CallArgumentInspector implements vscode.Disposable {
         : vscode.DiagnosticSeverity.Error;
 
     const enableHighlight = getOmniConfig<boolean>('enableCallArgumentHighlight', true);
+    const enableMissingCheck = getOmniConfig<boolean>('enableMissingArgumentInspection', true);
+    const enableUnexpectedKwCheck = getOmniConfig<boolean>('enableUnexpectedKeywordInspection', true);
+
     const decorations: vscode.DecorationOptions[] = [];
     const diagnostics: vscode.Diagnostic[] = [];
+    const parsedCalls: ParsedCallInfo[] = [];
+
     const text = document.getText();
     const lines = text.split(/\r?\n/);
 
@@ -481,8 +610,23 @@ export class CallArgumentInspector implements vscode.Disposable {
           continue;
         }
 
-        // Check 1: Too many positional arguments
-        // If ALL candidate definitions agree that callArgs.positionalCount > maxPositional
+        const fullCallRange = new vscode.Range(
+          lineIdx,
+          match.index,
+          callArgs.closeParenPos.line,
+          callArgs.closeParenPos.character + 1
+        );
+
+        parsedCalls.push({
+          receiver,
+          methodName,
+          callArgs,
+          targetRange: fullCallRange,
+          candidateDefs,
+          sigInfos,
+        });
+
+        // 1. Check: Too many positional arguments
         let allRejectExcess = true;
         let maxAllowed = 0;
         for (const s of sigInfos) {
@@ -496,14 +640,12 @@ export class CallArgumentInspector implements vscode.Disposable {
         }
 
         if (allRejectExcess && callArgs.positionalCount > maxAllowed) {
+          const excessItems = callArgs.items.filter((it) => !it.isKeyword).slice(maxAllowed);
           const targetRange =
-            callArgs.argRange.isEmpty || callArgs.positionalCount === 0
-              ? new vscode.Range(
-                  lineIdx,
-                  match.index,
-                  lineIdx,
-                  openParenChar + 1
-                )
+            excessItems.length > 0
+              ? new vscode.Range(excessItems[0].range.start, excessItems[excessItems.length - 1].range.end)
+              : callArgs.argRange.isEmpty
+              ? new vscode.Range(lineIdx, match.index, lineIdx, openParenChar + 1)
               : callArgs.argRange;
 
           const errorMsg = `'${methodName}' 最多接收 ${maxAllowed} 个位置参数，但实际传入了 ${callArgs.positionalCount} 个 (PyCharm 风格参数检查)`;
@@ -534,13 +676,180 @@ export class CallArgumentInspector implements vscode.Disposable {
             });
           }
         }
+
+        // 2. Check: Missing required arguments
+        if (enableMissingCheck) {
+          let allMissingRequired = true;
+          const missingPerSig: string[][] = [];
+
+          for (const s of sigInfos) {
+            const missingForThisSig: string[] = [];
+            for (let pIdx = 0; pIdx < s.minPositional; pIdx++) {
+              const p = s.params[pIdx];
+              if (!p || p.hasDefault || p.isVararg || p.isVarkwarg || p.isKeywordOnly) continue;
+              if (pIdx < callArgs.positionalCount) continue;
+              if (callArgs.keywords.includes(p.name)) continue;
+              missingForThisSig.push(p.name);
+            }
+            if (missingForThisSig.length === 0) {
+              allMissingRequired = false;
+              break;
+            }
+            missingPerSig.push(missingForThisSig);
+          }
+
+          if (allMissingRequired && missingPerSig.length > 0 && missingPerSig[0].length > 0) {
+            const missingNames = missingPerSig[0];
+            const targetRange = callArgs.argRange.isEmpty
+              ? callArgs.parenRange
+              : callArgs.argRange;
+
+            const diag = new vscode.Diagnostic(
+              targetRange,
+              `XF OmniNav: '${methodName}' 缺少必填参数: ${missingNames.join(', ')} (PyCharm 风格参数检查)`,
+              severity
+            );
+            diag.source = 'XF OmniNav';
+            diag.code = 'missing-arguments';
+            diagnostics.push(diag);
+
+            if (enableHighlight) {
+              decorations.push({
+                range: targetRange,
+                hoverMessage: new vscode.MarkdownString(
+                  `**XF OmniNav: 参数缺失 (PyCharm 风格)**\n\n\`${methodName}\` 缺少必填参数: **${missingNames.join(', ')}**。`
+                ),
+                renderOptions: {
+                  after: {
+                    contentText: ` ❗缺少必填参数: ${missingNames.join(', ')}`,
+                    color: '#ff4d4f',
+                    fontWeight: 'bold',
+                    fontStyle: 'normal',
+                    margin: '0 0 0 8px',
+                  },
+                },
+              });
+            }
+          }
+        }
+
+        // 3. Check: Unexpected keyword arguments
+        if (enableUnexpectedKwCheck && callArgs.keywords.length > 0) {
+          const hasAnyVarkwargs = sigInfos.some((s) => s.hasVarkwargs);
+          if (!hasAnyVarkwargs) {
+            for (const item of callArgs.items) {
+              if (!item.isKeyword || !item.keywordName) continue;
+              const kw = item.keywordName;
+              const isKnownInAnySig = sigInfos.some((s) =>
+                s.params.some((p) => p.name === kw)
+              );
+              if (!isKnownInAnySig) {
+                const diag = new vscode.Diagnostic(
+                  item.range,
+                  `XF OmniNav: '${methodName}' 未知关键字参数 '${kw}' (PyCharm 风格参数检查)`,
+                  severity
+                );
+                diag.source = 'XF OmniNav';
+                diag.code = 'unexpected-keyword';
+                diagnostics.push(diag);
+
+                if (enableHighlight) {
+                  decorations.push({
+                    range: item.range,
+                    hoverMessage: new vscode.MarkdownString(
+                      `**XF OmniNav: 未知关键字参数 (PyCharm 风格)**\n\n\`${methodName}\` 未定义名为 **${kw}** 的形参。`
+                    ),
+                    renderOptions: {
+                      after: {
+                        contentText: ` ❗未知关键字参数 '${kw}'`,
+                        color: '#ff4d4f',
+                        fontWeight: 'bold',
+                        fontStyle: 'normal',
+                        margin: '0 0 0 8px',
+                      },
+                    },
+                  });
+                }
+              }
+            }
+          }
+        }
       }
     }
 
+    this.lastCalls.set(document.uri.toString(), parsedCalls);
     this.diagnosticCollection.set(document.uri, diagnostics);
     this.lastDecorations.set(document.uri.toString(), decorations);
     this.applyDecorationsToDocument(document.uri, decorations);
     return diagnostics;
+  }
+
+  public getCallsForDocument(uri: vscode.Uri): ParsedCallInfo[] {
+    return this.lastCalls.get(uri.toString()) || [];
+  }
+
+  /**
+   * Pre-scan all Git modified Python files in background to decorate errors
+   * in the explorer file tree without requiring user to open them first.
+   */
+  public async scanGitModifiedFiles(workspaceRoot?: string): Promise<number> {
+    const isEnabled = getOmniConfig<boolean>('enableGitPreScan', true);
+    if (!isEnabled) return 0;
+
+    const root =
+      workspaceRoot ||
+      (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0]?.uri.fsPath);
+    if (!root) return 0;
+
+    try {
+      const { exec } = await import('child_process');
+      const util = await import('util');
+      const fs = await import('fs');
+      const path = await import('path');
+      const execAsync = util.promisify(exec);
+
+      const { stdout } = await execAsync('git status --porcelain', { cwd: root, timeout: 5000 });
+      const lines = stdout.split('\n');
+      const pyFiles: string[] = [];
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const filePath = trimmed.slice(2).trim();
+        if (filePath.endsWith('.py') && !filePath.includes('.git')) {
+          pyFiles.push(path.isAbsolute(filePath) ? filePath : path.join(root, filePath));
+        }
+      }
+
+      let errorCount = 0;
+      for (const filePath of pyFiles) {
+        try {
+          if (fs.existsSync(filePath)) {
+            const content = await fs.promises.readFile(filePath, 'utf-8');
+            const uri = vscode.Uri.file(filePath);
+            const lineList = content.split(/\r?\n/);
+            const mockDoc: any = {
+              uri,
+              languageId: 'python',
+              getText: () => content,
+              lineAt: (n: number) => ({
+                text: lineList[n] || '',
+                range: new vscode.Range(n, 0, n, (lineList[n] || '').length),
+              }),
+            };
+            const diags = this.inspectDocument(mockDoc);
+            if (diags.some((d) => d.severity === vscode.DiagnosticSeverity.Error)) {
+              errorCount++;
+            }
+          }
+        } catch {
+          // ignore individual file parse failure
+        }
+      }
+      return errorCount;
+    } catch {
+      return 0;
+    }
   }
 
   private applyDecorationsToDocument(
@@ -576,12 +885,14 @@ export class CallArgumentInspector implements vscode.Disposable {
   public clearDocument(uri: vscode.Uri): void {
     this.diagnosticCollection.delete(uri);
     this.lastDecorations.delete(uri.toString());
+    this.lastCalls.delete(uri.toString());
     this.applyDecorationsToDocument(uri, []);
   }
 
   public clearAll(): void {
     this.diagnosticCollection.clear();
     this.sigCache.clear();
+    this.lastCalls.clear();
     for (const uriStr of this.lastDecorations.keys()) {
       if (vscode.window.visibleTextEditors) {
         for (const editor of vscode.window.visibleTextEditors) {

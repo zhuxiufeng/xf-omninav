@@ -2,7 +2,7 @@
   "name": "xf-omninav",
   "displayName": "XF OmniNav",
   "description": "PyCharm-style silky-smooth omni symbol navigation, class & method inheritance hierarchy, gutter markers & 1-click CodeLens.",
-  "version": "1.0.30",
+  "version": "1.0.31",
   "publisher": "Vivian",
   "icon": "resources/icon.png",
   "repository": {
@@ -275,6 +275,31 @@
           "type": "boolean",
           "default": true,
           "description": "Render prominent PyCharm-style red background tint, border, and inline error hint for argument mismatches in the active editor."
+        },
+        "xfOmniNav.enableMissingArgumentInspection": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check for missing required parameters in Python calls (PyCharm-style)."
+        },
+        "xfOmniNav.enableUnexpectedKeywordInspection": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check for unexpected keyword arguments in Python calls (PyCharm-style)."
+        },
+        "xfOmniNav.enableParameterInlayHints": {
+          "type": "boolean",
+          "default": true,
+          "description": "Display PyCharm-style inline parameter name hints before arguments in Python calls."
+        },
+        "xfOmniNav.enableKlipperHover": {
+          "type": "boolean",
+          "default": true,
+          "description": "Display rich hover card for Klipper lookup_object components and dynamic variables."
+        },
+        "xfOmniNav.enableGitPreScan": {
+          "type": "boolean",
+          "default": true,
+          "description": "Pre-scan Git modified Python files in background on startup to decorate errors across file explorer tree."
         }
       }
     }

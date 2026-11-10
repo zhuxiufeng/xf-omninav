@@ -63,7 +63,17 @@ export class ThemeColor {
 }
 
 export class MarkdownString {
+  public isTrusted: boolean = false;
+  public supportHtml: boolean = false;
   constructor(public value: string = '') {}
+  appendMarkdown(val: string): MarkdownString {
+    this.value += val;
+    return this;
+  }
+  appendCodeblock(code: string, language?: string): MarkdownString {
+    this.value += `\n\`\`\`${language || ''}\n${code}\n\`\`\`\n`;
+    return this;
+  }
 }
 
 export enum OverviewRulerLane {
@@ -329,8 +339,70 @@ export const languages = {
   registerImplementationProvider: () => ({ dispose: () => {} }),
   registerCodeLensProvider: () => ({ dispose: () => {} }),
   registerInlayHintsProvider: () => ({ dispose: () => {} }),
+  registerHoverProvider: () => ({ dispose: () => {} }),
+  registerCodeActionProvider: () => ({ dispose: () => {} }),
   registerFoldingRangeProvider: () => ({ dispose: () => {} }),
 };
+
+export class Hover {
+  public contents: any[];
+  constructor(contents: any, public range?: Range) {
+    this.contents = Array.isArray(contents) ? contents : [contents];
+  }
+}
+
+export enum CodeActionKind {
+  QuickFix = 'quickfix',
+  Refactor = 'refactor',
+}
+
+export class CodeAction {
+  public edit?: WorkspaceEdit;
+  public command?: any;
+  public isPreferred?: boolean;
+  constructor(public title: string, public kind?: CodeActionKind) {}
+}
+
+export class WorkspaceEdit {
+  public _edits: any[] = [];
+  delete(uri: Uri, range: Range) {
+    this._edits.push({ type: 'delete', uri, range });
+  }
+  insert(uri: Uri, position: Position, newText: string) {
+    this._edits.push({ type: 'insert', uri, position, newText });
+  }
+  replace(uri: Uri, range: Range, newText: string) {
+    this._edits.push({ type: 'replace', uri, range, newText });
+  }
+  has(uri: Uri) {
+    return this._edits.some((e) => e.uri.toString() === uri.toString());
+  }
+  get(uri: Uri) {
+    return this._edits.filter((e) => e.uri.toString() === uri.toString());
+  }
+}
+
+export enum InlayHintKind {
+  Type = 1,
+  Parameter = 2,
+}
+
+export class InlayHint {
+  public tooltip?: string | MarkdownString;
+  public paddingLeft?: boolean;
+  public paddingRight?: boolean;
+  constructor(
+    public position: Position,
+    public label: string | InlayHintLabelPart[],
+    public kind?: InlayHintKind
+  ) {}
+}
+
+export class InlayHintLabelPart {
+  public tooltip?: string | MarkdownString;
+  public command?: any;
+  constructor(public value: string) {}
+}
 
 export const commands = {
   registerCommand: () => ({ dispose: () => {} }),

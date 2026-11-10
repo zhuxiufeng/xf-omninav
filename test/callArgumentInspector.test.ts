@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import * as vscode from 'vscode';
 import { CallArgumentInspector } from '../src/visual/callArgumentInspector';
 import { SymbolIndexer } from '../src/indexer/symbolIndexer';
+import { PythonParamInlayHintsProvider } from '../src/visual/pythonParamInlayHints';
+import { CallArgumentCodeActionProvider } from '../src/visual/callArgumentCodeActions';
+import { KlipperHoverProvider } from '../src/navigation/klipperHoverProvider';
 
 test('CallArgumentInspector tests', async (t) => {
   const indexer = new SymbolIndexer({ subscriptions: [] } as any);
@@ -126,6 +129,103 @@ test('CallArgumentInspector tests', async (t) => {
     assert.ok(decoratedRanges[0].renderOptions.after.contentText.includes('❗参数错误: 期望 ≤1 个，实传 2 个'));
 
     (vscode.window as any).visibleTextEditors = [];
+  });
+
+  await t.test('inspectDocument: should detect missing required arguments', async () => {
+    const callerMissingDoc = new (vscode as any).MockTextDocument(
+      `def run_replace(self):
+    ret = nozzle_manager.replace_nozzle()
+    return ret
+`,
+      '/workspace/caller_missing.py',
+      'python'
+    );
+
+    const diagnostics = inspector.inspectDocument(callerMissingDoc);
+    assert.equal(diagnostics.length, 1);
+    assert.equal(diagnostics[0].code, 'missing-arguments');
+    assert.ok(diagnostics[0].message.includes('缺少必填参数: nozzle_num'));
+  });
+
+  await t.test('inspectDocument: should detect unexpected keyword arguments', async () => {
+    const callerUnexpectedKwDoc = new (vscode as any).MockTextDocument(
+      `def run_replace(self):
+    ret = nozzle_manager.replace_nozzle(nozzle_num=1, force_reload=True)
+    return ret
+`,
+      '/workspace/caller_unexpected_kw.py',
+      'python'
+    );
+
+    const diagnostics = inspector.inspectDocument(callerUnexpectedKwDoc);
+    assert.equal(diagnostics.length, 1);
+    assert.equal(diagnostics[0].code, 'unexpected-keyword');
+    assert.ok(diagnostics[0].message.includes("未知关键字参数 'force_reload'"));
+  });
+
+  await t.test('PythonParamInlayHintsProvider: should provide parameter name hints for positional calls', () => {
+    const callerDoc = new (vscode as any).MockTextDocument(
+      `def run_replace(self):
+    ret = nozzle_manager.replace_nozzle(1)
+    return ret
+`,
+      '/workspace/caller_hints.py',
+      'python'
+    );
+
+    inspector.inspectDocument(callerDoc);
+    const provider = new PythonParamInlayHintsProvider(inspector);
+    const hints = provider.provideInlayHints(callerDoc, new vscode.Range(0, 0, 10, 0), {} as any);
+    assert.equal(hints.length, 1);
+    assert.equal(hints[0].label, 'nozzle_num: ');
+  });
+
+  await t.test('CallArgumentCodeActionProvider: should offer QuickFix to remove excess arguments', () => {
+    const callerDoc = new (vscode as any).MockTextDocument(
+      `def run_replace(self):
+    ret = nozzle_manager.replace_nozzle(nozzle_num, 3)
+    return ret
+`,
+      '/workspace/caller_fix.py',
+      'python'
+    );
+
+    const diags = inspector.inspectDocument(callerDoc);
+    const actionProvider = new CallArgumentCodeActionProvider(inspector, indexer);
+    const actions = actionProvider.provideCodeActions(
+      callerDoc,
+      diags[0].range,
+      { diagnostics: diags } as any,
+      {} as any
+    );
+
+    assert.ok(actions.length >= 1);
+    const removeAction = actions.find((a) => a.title.includes('移除多余实参'));
+    assert.ok(removeAction, 'Should offer QuickFix to remove excess arguments');
+    assert.ok(removeAction.edit?.has(callerDoc.uri));
+  });
+
+  await t.test('KlipperHoverProvider: should provide hover card for lookup_object variables', () => {
+    const klipperDoc = new (vscode as any).MockTextDocument(
+      `def test_klipper(self):
+    nozzle_manager = self.printer.lookup_object('nozzle_manager')
+    nozzle_manager.replace_nozzle(1)
+`,
+      '/workspace/test_klipper_hover.py',
+      'python'
+    );
+
+    const hoverProvider = new KlipperHoverProvider(indexer);
+    const hover = hoverProvider.provideHover(
+      klipperDoc,
+      new vscode.Position(2, 5), // hovering over nozzle_manager
+      {} as any
+    ) as any;
+
+    assert.ok(hover, 'Hover should be returned for Klipper object');
+    const mdValue = hover.contents[0].value;
+    assert.ok(mdValue.includes('Klipper Component Reference'));
+    assert.ok(mdValue.includes('nozzle_manager'));
   });
 
   inspector.dispose();

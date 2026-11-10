@@ -22,6 +22,9 @@ import { FoldingCache } from './folding/foldingCache';
 import { MermaidHierarchyExporter } from './visual/mermaidExporter';
 import { PyCharmFileErrorDecorator } from './visual/fileErrorDecorator';
 import { CallArgumentInspector } from './visual/callArgumentInspector';
+import { PythonParamInlayHintsProvider } from './visual/pythonParamInlayHints';
+import { CallArgumentCodeActionProvider } from './visual/callArgumentCodeActions';
+import { KlipperHoverProvider } from './navigation/klipperHoverProvider';
 
 export function activate(context: vscode.ExtensionContext) {
   const outputChannel = vscode.window.createOutputChannel('XF OmniNav');
@@ -91,6 +94,17 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.languages.registerCodeLensProvider(documentSelector, codeLensProvider),
     vscode.languages.registerInlayHintsProvider(documentSelector, inlayHintsProvider)
+  );
+
+  // PyCharm-style Python parameter inlay hints, quick fixes, and Klipper hover cards
+  const pythonParamInlayHints = new PythonParamInlayHintsProvider(callArgumentInspector);
+  const callArgumentCodeActions = new CallArgumentCodeActionProvider(callArgumentInspector, indexer);
+  const klipperHoverProvider = new KlipperHoverProvider(indexer);
+
+  context.subscriptions.push(
+    vscode.languages.registerInlayHintsProvider({ language: 'python' }, pythonParamInlayHints),
+    vscode.languages.registerCodeActionProvider({ language: 'python' }, callArgumentCodeActions),
+    vscode.languages.registerHoverProvider({ language: 'python' }, klipperHoverProvider)
   );
 
   // 3. Fine-grained branch folding providers (Python, Shell, C/C++, TS/JS/Java/Go, Rust)
@@ -663,6 +677,12 @@ export function activate(context: vscode.ExtensionContext) {
       if (vscode.window.activeTextEditor && vscode.window.activeTextEditor.document.languageId === 'python') {
         callArgumentInspector.triggerInspect(vscode.window.activeTextEditor);
       }
+      // Background Git modified files pre-scan to decorate errors in file tree without opening files
+      callArgumentInspector.scanGitModifiedFiles().then((errCount) => {
+        if (errCount > 0) {
+          outputChannel.appendLine(`[XF OmniNav] Git pre-scan found errors in ${errCount} modified file(s).`);
+        }
+      });
     });
   }, 1000);
 
