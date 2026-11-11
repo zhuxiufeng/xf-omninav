@@ -12,6 +12,7 @@ import {
 import { NavigateCommand } from '../navigation/navigateCommand';
 import { globalHistory } from '../navigation/jumpHistory';
 import { MermaidHierarchyExporter } from '../visual/mermaidExporter';
+import { HierarchyTreeViewer } from '../visual/hierarchyTree';
 import { debounce, getOmniConfig } from '../utils';
 import { InheritanceMarker } from '../types';
 
@@ -111,6 +112,10 @@ export class NavigationSubsystem implements vscode.Disposable {
 
     registerMulti('exportClassHierarchyMermaid', async (className?: string) => {
       await MermaidHierarchyExporter.exportClassHierarchy(this.indexer, className);
+    });
+
+    registerMulti('showHierarchyTree', async (className?: string) => {
+      await HierarchyTreeViewer.showHierarchyTree(this.indexer, className);
     });
 
     registerMulti('toggleGutterPosition', async () => {

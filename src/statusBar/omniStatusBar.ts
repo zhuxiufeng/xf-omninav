@@ -75,6 +75,13 @@ export class OmniStatusBar implements vscode.Disposable {
         },
       },
       {
+        label: '$(list-tree) Show Class Hierarchy Tree (PyCharm Style)',
+        description: 'Interactive tree view of ancestors, subclasses, and missing abstract methods',
+        action: async () => {
+          await vscode.commands.executeCommand('xfOmniNav.showHierarchyTree');
+        },
+      },
+      {
         label: '$(graph) Export Inheritance Hierarchy (Mermaid)',
         description: 'Generate and export class diagram to Markdown / Mermaid preview',
         action: async () => {

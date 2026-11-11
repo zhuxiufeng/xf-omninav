@@ -12,6 +12,8 @@ import {
 import { SymbolParser } from '../src/indexer/symbolParser';
 import { ContextResolver } from '../src/resolver/contextResolver';
 import { OmniStatusBar } from '../src/statusBar/omniStatusBar';
+import { StringInterner } from '../src/indexer/stringInterner';
+import { HierarchyTreeViewer } from '../src/visual/hierarchyTree';
 
 test('CallArgumentInspector tests', async (t) => {
   const indexer = new SymbolIndexer({ subscriptions: [] } as any);
@@ -382,6 +384,113 @@ test('CallArgumentInspector tests', async (t) => {
 
     assert.equal(authType, 'auth_manager', 'auth_srv should be inferred as auth_manager');
     assert.equal(apiType, 'rest_api', 'api_client should be inferred as rest_api');
+  });
+
+  await t.test('StringInterner: should deduplicate identical strings and conserve memory', () => {
+    const s1 = StringInterner.intern('src/models/user.py');
+    const s2 = StringInterner.intern('src/models/user.py');
+    assert.equal(s1, s2);
+    assert.ok(StringInterner.size > 0);
+  });
+
+  await t.test('ContextResolver: should infer variable type from callee return type annotation (-> ReturnType)', async () => {
+    const providerDoc = new (vscode as any).MockTextDocument(
+      `def get_printer_manager() -> PrinterManager:
+    return None
+`,
+      '/workspace/manager_provider.py',
+      'python'
+    );
+    await indexer.indexDocument(providerDoc);
+
+    const callerDoc = new (vscode as any).MockTextDocument(
+      `def run_job():
+    mgr = get_printer_manager()
+    mgr.start_job()
+`,
+      '/workspace/caller_job.py',
+      'python'
+    );
+    const inferred = ContextResolver.inferVariableType(callerDoc, 'mgr', 2, indexer);
+    assert.equal(inferred, 'PrinterManager', 'mgr should be inferred as PrinterManager from return type');
+  });
+
+  await t.test('PEP 3102: should flag keyword-only parameter passed as positional argument and offer QuickFix', async () => {
+    const kwOnlyDoc = new (vscode as any).MockTextDocument(
+      `class DeviceSetup:
+    def configure(self, dev_id, *, timeout=10, retry=3):
+        pass
+`,
+      '/workspace/device_setup.py',
+      'python'
+    );
+    await indexer.indexDocument(kwOnlyDoc);
+
+    const invalidCallerDoc = new (vscode as any).MockTextDocument(
+      `def test_setup():
+    d = DeviceSetup()
+    d.configure(101, 5)
+`,
+      '/workspace/test_setup_caller.py',
+      'python'
+    );
+
+    const diags = inspector.inspectDocument(invalidCallerDoc);
+    assert.equal(diags.length, 1, 'Should produce 1 diagnostic for keyword-only violation');
+    assert.equal(diags[0].code, 'keyword-only-as-positional');
+    assert.ok(diags[0].message.includes('timeout'));
+
+    // Verify QuickFix
+    const codeActionProvider = new CallArgumentCodeActionProvider(inspector, indexer);
+    const actions = codeActionProvider.provideCodeActions(
+      invalidCallerDoc,
+      diags[0].range,
+      { diagnostics: diags } as any,
+      {} as any
+    );
+    const convertAction = actions.find((a) => a.title.includes('转换为关键字形式'));
+    assert.ok(convertAction, 'Should offer QuickFix to convert positional arg to keyword arg');
+  });
+
+  await t.test('HierarchyTreeViewer: should detect unimplemented abstract methods from base classes', async () => {
+    const abstractBaseDoc = new (vscode as any).MockTextDocument(
+      `class BasePlugin:
+    @abstractmethod
+    def execute_task(self, task_id):
+        pass
+
+    @abstractmethod
+    def cleanup(self):
+        pass
+`,
+      '/workspace/base_plugin.py',
+      'python'
+    );
+    await indexer.indexDocument(abstractBaseDoc);
+
+    const subPluginDoc = new (vscode as any).MockTextDocument(
+      `class MySubPlugin(BasePlugin):
+    def execute_task(self, task_id):
+        return True
+`,
+      '/workspace/my_sub_plugin.py',
+      'python'
+    );
+    await indexer.indexDocument(subPluginDoc);
+
+    const missing = HierarchyTreeViewer.findMissingAbstractMethods(indexer, 'MySubPlugin');
+    assert.equal(missing.length, 1, 'Should detect 1 missing abstract method (cleanup)');
+    assert.equal(missing[0].name, 'cleanup');
+  });
+
+  await t.test('parseTypeScriptSignature: should parse TypeScript parameters and bounds accurately', () => {
+    const tsSig = inspector.parseTypeScriptSignature('function calculate(total: number, tax: number = 0, ...rest: any[]): number');
+    assert.ok(tsSig);
+    assert.equal(tsSig?.minPositional, 1, 'total is required, tax has default');
+    assert.equal(tsSig?.maxPositional, Infinity, 'has rest params');
+    assert.equal(tsSig?.hasVarargs, true);
+    assert.equal(tsSig?.params[0].name, 'total');
+    assert.equal(tsSig?.params[1].name, 'tax');
   });
 
   await t.test('OmniStatusBar: should format symbol count and indexing status cleanly', async () => {

@@ -231,6 +231,7 @@ export class SymbolParser {
           let isStatic = false;
           let isClassMethod = false;
           let isProperty = false;
+          let isAbstract = false;
 
           for (let d = i - 1; d >= Math.max(0, i - 10); d--) {
             const decLine = lines[d].trim();
@@ -239,6 +240,7 @@ export class SymbolParser {
               if (decLine.startsWith('@staticmethod')) isStatic = true;
               else if (decLine.startsWith('@classmethod')) isClassMethod = true;
               else if (decLine.startsWith('@property')) isProperty = true;
+              else if (decLine.startsWith('@abstractmethod') || decLine.includes('abstractmethod')) isAbstract = true;
             } else {
               break;
             }
@@ -275,6 +277,7 @@ export class SymbolParser {
             isExported: !funcName.startsWith('_'),
             isStatic,
             isClassMethod,
+            isAbstract,
           }));
           continue;
         }
@@ -469,6 +472,7 @@ export class SymbolParser {
         ) {
           const name = methodMatch[1];
           const isStatic = /\bstatic\b/.test(line);
+          const isAbstract = /\babstract\b/.test(line);
           const startCol = line.indexOf(name);
           definitions.push(new CompactSymbolDefinition({
             name,
@@ -481,6 +485,7 @@ export class SymbolParser {
             fileRelativePath: relativePath,
             isExported: true,
             isStatic,
+            isAbstract,
           }));
         }
       }

@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { StringInterner } from './indexer/stringInterner';
 
 export type SymbolKind =
   | 'class'
@@ -26,6 +27,7 @@ export interface SymbolDefinition {
   isExported?: boolean;
   isStatic?: boolean;
   isClassMethod?: boolean;
+  isAbstract?: boolean;
 }
 
 /**
@@ -45,6 +47,7 @@ export class CompactSymbolDefinition implements SymbolDefinition {
   public readonly isExported?: boolean;
   public readonly isStatic?: boolean;
   public readonly isClassMethod?: boolean;
+  public readonly isAbstract?: boolean;
 
   private readonly _r: [number, number, number, number];
   private readonly _sr: [number, number, number, number];
@@ -65,12 +68,14 @@ export class CompactSymbolDefinition implements SymbolDefinition {
     isExported?: boolean;
     isStatic?: boolean;
     isClassMethod?: boolean;
+    isAbstract?: boolean;
   }) {
     this.name = options.name;
-    this.kind = options.kind;
+    this.kind = StringInterner.intern(options.kind);
     this.uri = options.uri;
     this.isStatic = options.isStatic;
     this.isClassMethod = options.isClassMethod;
+    this.isAbstract = options.isAbstract;
     this._r = Array.isArray(options.range)
       ? options.range
       : [
@@ -88,8 +93,8 @@ export class CompactSymbolDefinition implements SymbolDefinition {
           options.selectionRange.end.character,
         ];
     this.signature = options.signature;
-    this.fileRelativePath = options.fileRelativePath;
-    this.containerName = options.containerName;
+    this.fileRelativePath = StringInterner.intern(options.fileRelativePath);
+    this.containerName = StringInterner.intern(options.containerName);
     this.parentContainers = options.parentContainers;
     this.docstring = options.docstring;
     this.isExported = options.isExported;

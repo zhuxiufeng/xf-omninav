@@ -56,7 +56,15 @@ export class PythonParamInlayHintsProvider implements vscode.InlayHintsProvider 
               `${param.name}: `,
               vscode.InlayHintKind.Parameter
             );
-            hint.tooltip = `形参: ${param.name}${param.hasDefault ? ' (可选/带默认值)' : ' (必填参数)'}`;
+            const tooltip = new vscode.MarkdownString();
+            tooltip.isTrusted = true;
+            tooltip.appendMarkdown(`**形参**: \`${param.name}\`${param.hasDefault ? ' *(可选参数/带默认值)*' : ' *(必填参数)*'}\n\n`);
+            tooltip.appendMarkdown(`- **方法/函数**: \`${call.methodName}\`\n`);
+            tooltip.appendMarkdown(`- **参数序号**: 第 ${i + 1} 个参数\n`);
+            if (sig.name) {
+              tooltip.appendMarkdown(`- **签名**: \`${sig.name}\`\n`);
+            }
+            hint.tooltip = tooltip;
             hint.paddingRight = true;
             hints.push(hint);
           }

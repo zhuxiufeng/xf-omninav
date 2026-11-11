@@ -34,7 +34,7 @@ export class CallArgumentCodeActionProvider implements vscode.CodeActionProvider
           c.callArgs.parenRange.contains(diag.range.start)
       );
 
-      if (diag.code === 'too-many-arguments') {
+      if (diag.code === 'too-many-arguments' || diag.code === 'keyword-only-as-positional') {
         if (matchingCall && matchingCall.sigInfos.length > 0) {
           const maxAllowed = Math.max(...matchingCall.sigInfos.map((s) => s.maxPositional));
           const positionalItems = matchingCall.callArgs.items.filter((it) => !it.isKeyword);
@@ -44,12 +44,33 @@ export class CallArgumentCodeActionProvider implements vscode.CodeActionProvider
           const excessSliceStart = hasExplicitSelf ? maxAllowed + 1 : maxAllowed;
           const excessItems = positionalItems.slice(excessSliceStart);
 
+          // 1. If keyword-only violation, offer 1-click QuickFix to convert to keyword argument
+          if (diag.code === 'keyword-only-as-positional' && excessItems.length > 0) {
+            const kwMatch = diag.message.match(/'([^']+)' 为仅关键字/);
+            if (kwMatch && kwMatch[1]) {
+              const kwName = kwMatch[1];
+              const targetItem = excessItems[0];
+              const convertAction = new vscode.CodeAction(
+                `XF OmniNav: 将参数转换为关键字形式 '${kwName}=${targetItem.text}'`,
+                vscode.CodeActionKind.QuickFix
+              );
+              convertAction.isPreferred = true;
+              convertAction.diagnostics = [diag];
+              const convertEdit = new vscode.WorkspaceEdit();
+              convertEdit.replace(document.uri, targetItem.range, `${kwName}=${targetItem.text}`);
+              convertAction.edit = convertEdit;
+              actions.push(convertAction);
+            }
+          }
+
           if (excessItems.length > 0) {
             const action = new vscode.CodeAction(
               `XF OmniNav: 移除多余实参 (${excessItems.map((e) => e.text).join(', ')})`,
               vscode.CodeActionKind.QuickFix
             );
-            action.isPreferred = true;
+            if (diag.code !== 'keyword-only-as-positional') {
+              action.isPreferred = true;
+            }
             action.diagnostics = [diag];
             const edit = new vscode.WorkspaceEdit();
             for (const item of excessItems) {

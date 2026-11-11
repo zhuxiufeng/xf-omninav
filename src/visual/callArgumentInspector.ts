@@ -19,6 +19,7 @@ export interface FunctionSignatureInfo {
   hasVarargs: boolean;
   hasVarkwargs: boolean;
   params: ParamSpec[];
+  keywordOnlyParams?: ParamSpec[];
 }
 
 export interface RawArgumentItem {
@@ -288,6 +289,95 @@ export class CallArgumentInspector implements vscode.Disposable {
   }
 
   /**
+   * Parse TypeScript / JavaScript signature into positional parameter constraints.
+   */
+  public parseTypeScriptSignature(signature: string): FunctionSignatureInfo | null {
+    if (!signature) return null;
+    const cacheKey = `ts:${signature}`;
+    if (this.sigCache.has(cacheKey)) {
+      return this.sigCache.get(cacheKey) || null;
+    }
+
+    const parenStart = signature.indexOf('(');
+    const parenEnd = signature.lastIndexOf(')');
+    if (parenStart === -1 || parenEnd === -1 || parenEnd <= parenStart) {
+      this.sigCache.set(cacheKey, null);
+      return null;
+    }
+
+    const rawParams = signature.slice(parenStart + 1, parenEnd).trim();
+    if (!rawParams) {
+      const info: FunctionSignatureInfo = {
+        name: '',
+        minPositional: 0,
+        maxPositional: 0,
+        hasVarargs: false,
+        hasVarkwargs: false,
+        params: [],
+      };
+      this.sigCache.set(cacheKey, info);
+      return info;
+    }
+
+    const params: string[] = [];
+    let depth = 0;
+    let cur = '';
+    for (let i = 0; i < rawParams.length; i++) {
+      const ch = rawParams[i];
+      if (ch === '(' || ch === '[' || ch === '{' || ch === '<') depth++;
+      else if (ch === ')' || ch === ']' || ch === '}' || ch === '>') depth--;
+      else if (ch === ',' && depth === 0) {
+        if (cur.trim()) params.push(cur.trim());
+        cur = '';
+        continue;
+      }
+      cur += ch;
+    }
+    if (cur.trim()) params.push(cur.trim());
+
+    let hasVarargs = false;
+    const positionalParams: ParamSpec[] = [];
+
+    for (const p of params) {
+      if (p.startsWith('...')) {
+        hasVarargs = true;
+        continue;
+      }
+      const hasDefault = p.includes('=') || p.includes('?:');
+      const name = p.split(/[:?=]/)[0].trim().replace(/^public\s+|^private\s+|^protected\s+|^readonly\s+/, '');
+      if (name === 'this') continue;
+
+      positionalParams.push({
+        name,
+        hasDefault,
+        isVararg: false,
+        isVarkwarg: false,
+        isKeywordOnly: false,
+      });
+    }
+
+    let minPos = 0;
+    for (const p of positionalParams) {
+      if (!p.hasDefault) {
+        minPos++;
+      } else {
+        break;
+      }
+    }
+
+    const info: FunctionSignatureInfo = {
+      name: '',
+      minPositional: minPos,
+      maxPositional: hasVarargs ? Infinity : positionalParams.length,
+      hasVarargs,
+      hasVarkwargs: false,
+      params: positionalParams,
+    };
+    this.sigCache.set(cacheKey, info);
+    return info;
+  }
+
+  /**
    * Parse Python signature into positional/keyword parameter constraints.
    */
   public parsePythonSignature(
@@ -399,6 +489,7 @@ export class CallArgumentInspector implements vscode.Disposable {
       hasVarargs,
       hasVarkwargs,
       params: positionalParams.concat(keywordOnlyParams),
+      keywordOnlyParams,
     };
 
     if (this.sigCache.size >= 1024) {
@@ -640,7 +731,9 @@ export class CallArgumentInspector implements vscode.Disposable {
     document: vscode.TextDocument,
     scanLineRange?: { start: number; end: number }
   ): vscode.Diagnostic[] {
-    if (document.languageId !== 'python') {
+    const isPython = document.languageId === 'python';
+    const isTSorJS = document.languageId === 'typescript' || document.languageId === 'javascript';
+    if (!isPython && !isTSorJS) {
       return [];
     }
 
@@ -765,8 +858,8 @@ export class CallArgumentInspector implements vscode.Disposable {
         } else if ((receiver === 'self' || receiver === 'cls') && this.isPolymorphicMethod(methodName)) {
           continue;
         } else if (receiver && receiver !== 'self' && receiver !== 'cls') {
-          // If receiver is a variable, check if it was inferred to a specific class (e.g. lookup_object)
-          const inferredType = ContextResolver.inferVariableType(document, receiver, lineIdx);
+          // If receiver is a variable, check if it was inferred to a specific class (e.g. lookup_object or return type)
+          const inferredType = ContextResolver.inferVariableType(document, receiver, lineIdx, this.indexer);
           const isGeneric = GENERIC_VARIABLE_NAMES.has(receiver);
 
           if (inferredType) {
@@ -812,7 +905,9 @@ export class CallArgumentInspector implements vscode.Disposable {
         const sigInfos: FunctionSignatureInfo[] = [];
         for (const def of candidateDefs) {
           const isMethod = def.kind === 'method' || Boolean(def.containerName);
-          const sigInfo = this.parsePythonSignature(def.signature, isMethod, Boolean(def.isStatic));
+          const sigInfo = isPython
+            ? this.parsePythonSignature(def.signature, isMethod, Boolean(def.isStatic))
+            : this.parseTypeScriptSignature(def.signature);
           if (sigInfo) {
             sigInfos.push(sigInfo);
           }
@@ -872,25 +967,42 @@ export class CallArgumentInspector implements vscode.Disposable {
               ? new vscode.Range(lineIdx, match.index, lineIdx, openParenChar + 1)
               : callArgs.argRange;
 
-          const errorMsg = `'${methodName}' 最多接收 ${maxAllowed} 个位置参数，但实际传入了 ${effectivePositionalCount} 个 (PyCharm 风格参数检查)`;
+          let isKwOnlyViolation = false;
+          let kwOnlyParamName = '';
+          for (const s of sigInfos) {
+            if (s.keywordOnlyParams && s.keywordOnlyParams.length > 0) {
+              isKwOnlyViolation = true;
+              kwOnlyParamName = s.keywordOnlyParams[0].name;
+              break;
+            }
+          }
+
+          const diagCode = isKwOnlyViolation ? 'keyword-only-as-positional' : 'too-many-arguments';
+          const errorMsg = isKwOnlyViolation
+            ? `'${kwOnlyParamName}' 为仅关键字形参 (PEP 3102)，必须使用 '${kwOnlyParamName}=...' 关键字传参`
+            : `'${methodName}' 最多接收 ${maxAllowed} 个位置参数，但实际传入了 ${effectivePositionalCount} 个 (PyCharm 风格参数检查)`;
           const diag = new vscode.Diagnostic(
             targetRange,
             `XF OmniNav: ${errorMsg}`,
             severity
           );
           diag.source = 'XF OmniNav';
-          diag.code = 'too-many-arguments';
+          diag.code = diagCode;
           diagnostics.push(diag);
 
           if (enableHighlight) {
             decorations.push({
               range: targetRange,
               hoverMessage: new vscode.MarkdownString(
-                `**XF OmniNav: 参数错误 (PyCharm 风格)**\n\n\`${methodName}\` 最多接收 **${maxAllowed}** 个位置参数，但实际传入了 **${effectivePositionalCount}** 个。`
+                isKwOnlyViolation
+                  ? `**XF OmniNav: 仅关键字参数错误 (PEP 3102 / PyCharm 风格)**\n\n\`${methodName}\` 中的形参 **${kwOnlyParamName}** 声明为仅关键字形参，不能以位置形式传参。`
+                  : `**XF OmniNav: 参数错误 (PyCharm 风格)**\n\n\`${methodName}\` 最多接收 **${maxAllowed}** 个位置参数，但实际传入了 **${effectivePositionalCount}** 个。`
               ),
               renderOptions: {
                 after: {
-                  contentText: ` ❗参数错误: 期望 ≤${maxAllowed} 个，实传 ${effectivePositionalCount} 个`,
+                  contentText: isKwOnlyViolation
+                    ? ` ❗'${kwOnlyParamName}' 必须使用关键字形式传参`
+                    : ` ❗参数错误: 期望 ≤${maxAllowed} 个，实传 ${effectivePositionalCount} 个`,
                   color: '#ff4d4f',
                   fontWeight: 'bold',
                   fontStyle: 'normal',
@@ -1129,7 +1241,8 @@ export class CallArgumentInspector implements vscode.Disposable {
   }
 
   public triggerInspect(editor: vscode.TextEditor): void {
-    if (editor.document.languageId === 'python') {
+    const lang = editor.document.languageId;
+    if (lang === 'python' || lang === 'typescript' || lang === 'javascript') {
       this.debouncedInspect(editor);
 
       // For large files (>1500 lines), schedule full audit when user pauses typing

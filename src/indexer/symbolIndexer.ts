@@ -717,6 +717,25 @@ export class SymbolIndexer implements vscode.Disposable {
   }
 
   /**
+   * Get all method definitions belonging to a specific class.
+   */
+  public getMethodsInClass(className: string): SymbolDefinition[] {
+    const methodNames = this.classMethods.get(className);
+    if (!methodNames) return [];
+    const results: SymbolDefinition[] = [];
+    const cleanCls = className.toLowerCase().replace(/[^a-z0-9]/g, '');
+    for (const name of methodNames) {
+      const defs = this.findExact(name);
+      for (const d of defs) {
+        if (d.containerName && d.containerName.toLowerCase().replace(/[^a-z0-9]/g, '') === cleanCls) {
+          results.push(d);
+        }
+      }
+    }
+    return results;
+  }
+
+  /**
    * Get class hierarchy map clone.
    */
   public getClassHierarchyMap(): Map<string, string[]> {

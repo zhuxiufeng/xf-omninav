@@ -276,20 +276,22 @@ export class ContextResolver {
    * e.g. `d = Dog()` or `d: Dog = ...` or `def test(d: Dog):`
    * Also recognizes standard Python built-in literals like `result = { ... }` (dict),
    * `items = [ ... ]` (list), `s = "..."` (str), etc.
+   * Supports return type inference from callee signature (`-> ReturnType`) when indexer is provided.
    */
   public static inferVariableType(
     document: vscode.TextDocument,
     varName: string,
-    callLine: number
+    callLine: number,
+    indexer?: any
   ): string | undefined {
     const escaped = varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const patterns = [
       // const x = new Dog(...) or x = Dog(...) or x = module.Dog(...)
       new RegExp(`(?:const|let|var\\s+)?${escaped}\\s*=\\s*(?:new\\s+)?(?:[A-Za-z0-9_]+\\.)?([A-Z][A-Za-z0-9_]*)\\s*\\(`),
-      // x: Dog = ...
-      new RegExp(`(?:const|let|var\\s+)?${escaped}\\s*:\\s*([A-Z][A-Za-z0-9_]*)\\b`),
-      // def func(x: Dog):
-      new RegExp(`(?:def|function)\\s+[A-Za-z0-9_]+\\s*\\(.*?[\\s,]${escaped}\\s*:\\s*([A-Z][A-Za-z0-9_]*)`),
+      // x: Dog = ... or x: Optional[Dog] = ... or x: Union[Dog, None] = ...
+      new RegExp(`(?:const|let|var\\s+)?${escaped}\\s*:\\s*(?:Optional\\[|Union\\[)?([A-Z][A-Za-z0-9_]*)\\b`),
+      // def func(x: Dog): or def func(x: Optional[Dog]):
+      new RegExp(`(?:def|function)\\s+[A-Za-z0-9_]+\\s*\\(.*?[\\s,]${escaped}\\s*:\\s*(?:Optional\\[)?([A-Z][A-Za-z0-9_]*)`),
       // (x as Dog)
       new RegExp(`\\(${escaped}\\s+as\\s+([A-Z][A-Za-z0-9_]*)\\)`),
       // Generic service locator / component factory: x = get_service('auth') or lookup_object('nozzle') or get_component('...')
@@ -330,6 +332,31 @@ export class ContextResolver {
         const match = line.match(pattern);
         if (match && match[1]) {
           return match[1];
+        }
+      }
+
+      // Return type inference: var = callee(...)
+      if (indexer && typeof indexer.findExact === 'function') {
+        const calleeMatch = line.match(
+          new RegExp(`^(?:const|let|var\\s+)?${escaped}\\s*=\\s*(?:[A-Za-z0-9_]+\\.)?([a-z_][A-Za-z0-9_]*)\\s*\\(`)
+        );
+        if (calleeMatch && calleeMatch[1]) {
+          const calleeName = calleeMatch[1];
+          const defs = indexer.findExact(calleeName);
+          for (const d of defs) {
+            if (d.signature) {
+              const retMatch = d.signature.match(/->\s*(?:Optional\[)?([A-Z][A-Za-z0-9_]*)/);
+              if (retMatch && retMatch[1]) {
+                return retMatch[1];
+              }
+            }
+            if (d.docstring) {
+              const docMatch = d.docstring.match(/(?::rtype:|@returns?\{)\s*([A-Z][A-Za-z0-9_]*)/);
+              if (docMatch && docMatch[1]) {
+                return docMatch[1];
+              }
+            }
+          }
         }
       }
 
