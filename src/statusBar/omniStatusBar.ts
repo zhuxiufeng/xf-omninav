@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { SymbolIndexer } from '../indexer/symbolIndexer';
+import { getOmniConfig } from '../utils';
 
 /**
  * Universal Status Bar item for XF OmniNav.
@@ -25,13 +26,18 @@ export class OmniStatusBar implements vscode.Disposable {
     );
 
     this.update();
-    this.statusBarItem.show();
   }
 
   /**
    * Update status bar text and tooltip based on index state.
    */
   public update(): void {
+    if (!getOmniConfig<boolean>('showStatusBar', true)) {
+      this.statusBarItem.hide();
+      return;
+    }
+    this.statusBarItem.show();
+
     if (this.indexer.indexing) {
       this.statusBarItem.text = '$(sync~spin) OmniNav: Indexing...';
       this.statusBarItem.tooltip = 'XF OmniNav is currently scanning workspace symbols...';

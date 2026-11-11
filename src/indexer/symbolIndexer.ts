@@ -233,12 +233,11 @@ export class SymbolIndexer implements vscode.Disposable {
         await new Promise((resolve) => setTimeout(resolve, 5));
       }
 
-      this._onDidIndexUpdate.fire(this.totalSymbols);
-
       // Persist symbol cache asynchronously to disk
       await this.saveToDiskCache();
     } finally {
       this.isIndexing = false;
+      this._onDidIndexUpdate.fire(this.totalSymbols);
     }
   }
 

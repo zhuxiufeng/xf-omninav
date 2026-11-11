@@ -8,7 +8,6 @@ import { getOmniConfig } from '../utils';
  */
 export class UiSubsystem implements vscode.Disposable {
   public readonly omniStatusBar: OmniStatusBar;
-  private indexStatusBar: vscode.StatusBarItem;
   private disposables: vscode.Disposable[] = [];
 
   constructor(
@@ -16,14 +15,7 @@ export class UiSubsystem implements vscode.Disposable {
     private readonly indexer: SymbolIndexer
   ) {
     this.omniStatusBar = new OmniStatusBar(indexer);
-
-    this.indexStatusBar = vscode.window.createStatusBarItem(
-      vscode.StatusBarAlignment.Right,
-      90
-    );
-    this.indexStatusBar.command = 'xfOmniNav.rebuildIndex';
-
-    this.disposables.push(this.omniStatusBar, this.indexStatusBar);
+    this.disposables.push(this.omniStatusBar);
   }
 
   public activate(
@@ -32,24 +24,6 @@ export class UiSubsystem implements vscode.Disposable {
     registerMulti('showStatusBarMenu', async () => {
       await this.omniStatusBar.showMenu();
     });
-
-    this.disposables.push(
-      this.indexer.onDidIndexUpdate((count) => {
-        this.updateIndexStatusBar(count);
-      })
-    );
-
-    this.updateIndexStatusBar(this.indexer.totalSymbols);
-  }
-
-  public updateIndexStatusBar(count: number): void {
-    if (!getOmniConfig<boolean>('showStatusBar', true)) {
-      this.indexStatusBar.hide();
-      return;
-    }
-    this.indexStatusBar.text = `$(search) OmniNav: ${count.toLocaleString()}`;
-    this.indexStatusBar.tooltip = `XF OmniNav: ${count.toLocaleString()} symbols indexed in ${this.indexer.totalFiles} files. Click to re-index.`;
-    this.indexStatusBar.show();
   }
 
   public dispose(): void {
