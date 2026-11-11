@@ -24,6 +24,9 @@ export class UiSubsystem implements vscode.Disposable {
     registerMulti('showStatusBarMenu', async () => {
       await this.omniStatusBar.showMenu();
     });
+    registerMulti('reloadWindow', async () => {
+      await vscode.commands.executeCommand('workbench.action.reloadWindow');
+    });
   }
 
   public dispose(): void {

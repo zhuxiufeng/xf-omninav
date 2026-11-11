@@ -67,7 +67,14 @@ export class OmniStatusBar implements vscode.Disposable {
   public async showMenu(): Promise<void> {
     const items: (vscode.QuickPickItem & { action: () => Promise<void> | void })[] = [
       {
-        label: '$(refresh) Rebuild Symbol Index',
+        label: '$(refresh) Reload Window (重新加载窗口)',
+        description: 'Reload editor window to apply latest extension updates immediately',
+        action: async () => {
+          await vscode.commands.executeCommand('workbench.action.reloadWindow');
+        },
+      },
+      {
+        label: '$(sync) Rebuild Symbol Index',
         description: 'Force re-scan all workspace files and refresh persistent cache',
         action: async () => {
           await vscode.commands.executeCommand('xfOmniNav.rebuildIndex');
