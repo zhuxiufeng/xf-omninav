@@ -31,6 +31,18 @@ export class ParamInlayHintsProvider implements vscode.InlayHintsProvider {
     const isEnabled = getOmniConfig<boolean>('enableParameterInlayHints', true);
     if (!isEnabled) return [];
 
+    // Avoid duplicate inlay hints if native TS/JS parameter hints are already fully enabled
+    if (document.languageId === 'typescript' || document.languageId === 'javascript') {
+      const section =
+        document.languageId === 'typescript'
+          ? 'typescript.inlayHints.parameterNames.enabled'
+          : 'javascript.inlayHints.parameterNames.enabled';
+      const nativeParamHints = vscode.workspace.getConfiguration().get<string>(section);
+      if (nativeParamHints === 'all') {
+        return [];
+      }
+    }
+
     const calls = this.inspector.getCallsForDocument(document.uri);
     if (!calls || calls.length === 0) return [];
     const hints: vscode.InlayHint[] = [];
