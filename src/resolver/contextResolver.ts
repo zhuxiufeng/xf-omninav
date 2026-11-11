@@ -331,6 +331,13 @@ export class ContextResolver {
       for (const pattern of patterns) {
         const match = line.match(pattern);
         if (match && match[1]) {
+          if (match[1] === 'None' || match[1] === 'Any') {
+            const altMatch = line.match(new RegExp(`${escaped}\\s*:\\s*(?:.*\\|\\s*)?([A-Z][A-Za-z0-9_]*)\\b`));
+            if (altMatch && altMatch[1] && altMatch[1] !== 'None' && altMatch[1] !== 'Any') {
+              return altMatch[1];
+            }
+            continue;
+          }
           return match[1];
         }
       }

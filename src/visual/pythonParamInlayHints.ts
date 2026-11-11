@@ -87,7 +87,7 @@ export class ParamInlayHintsProvider implements vscode.InlayHintsProvider {
         const item = itemsToMatch[i];
         if (i < sig.params.length) {
           const param = sig.params[i];
-          if (param && param.name && !param.isVararg && !param.isVarkwarg) {
+          if (param && param.name && !param.isVararg && !param.isVarkwarg && !param.isKeywordOnly) {
             const hint = new vscode.InlayHint(
               item.range.start,
               `${param.name}: `,

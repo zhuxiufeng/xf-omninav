@@ -252,14 +252,33 @@ export class SymbolParser {
             ? 'method'
             : 'function';
 
-          // Extract full signature up to colon
+          // Extract full multiline signature up to header colon ':'
           let fullSig = trimmed;
           let sigEndLine = i;
-          while (!fullSig.includes(':') && sigEndLine < lines.length - 1) {
-            sigEndLine++;
-            fullSig += ' ' + lines[sigEndLine].trim();
+          let parenDepth = 0;
+          let seenOpenParen = false;
+
+          for (let l = i; l < lines.length; l++) {
+            const lText = lines[l];
+            for (let c = 0; c < lText.length; c++) {
+              const ch = lText[c];
+              if (ch === '#') break; // Ignore inline comments
+              if (ch === '(') {
+                parenDepth++;
+                seenOpenParen = true;
+              } else if (ch === ')') {
+                parenDepth--;
+              }
+            }
+            if (l > i) {
+              fullSig += ' ' + lText.trim();
+            }
+            if (seenOpenParen && parenDepth <= 0 && lText.includes(':')) {
+              sigEndLine = l;
+              break;
+            }
           }
-          fullSig = fullSig.replace(/:.*$/, '');
+          fullSig = fullSig.replace(/:[^:]*$/, '').trim();
 
           const range = new vscode.Range(i, 0, sigEndLine, lines[sigEndLine].length);
           const selectionRange = new vscode.Range(i, startCol, i, endCol);
@@ -461,14 +480,17 @@ export class SymbolParser {
       // Method inside class: methodName(...) {
       if (currentClass) {
         const methodMatch = line.match(
-          /^\s*(?:public|private|protected|async|static|\*)*\s*([A-Za-z0-9_$]+)\s*\([^)]*\)\s*[:{]/
+          /^\s*(?:public\s+|private\s+|protected\s+|async\s+|static\s+|readonly\s+|override\s+|\*\s*)*([A-Za-z0-9_$]+)\s*\(/
         );
         if (
           methodMatch &&
           methodMatch[1] !== 'constructor' &&
           methodMatch[1] !== 'if' &&
           methodMatch[1] !== 'for' &&
-          methodMatch[1] !== 'while'
+          methodMatch[1] !== 'while' &&
+          methodMatch[1] !== 'switch' &&
+          methodMatch[1] !== 'catch' &&
+          (line.includes('{') || line.includes(':') || line.includes(';'))
         ) {
           const name = methodMatch[1];
           const isStatic = /\bstatic\b/.test(line);

@@ -150,8 +150,8 @@ export class PyCharmFileErrorDecorator implements vscode.FileDecorationProvider,
     const propagate = getOmniConfig<boolean>('fileErrorPropagate', true);
 
     let badge: string | undefined = undefined;
-    if (rawBadge && rawBadge !== 'none') {
-      badge = rawBadge.slice(0, 2);
+    if (rawBadge && rawBadge !== 'none' && rawBadge.trim().length > 0) {
+      badge = Array.from(rawBadge.trim()).slice(0, 2).join('');
     }
 
     const sample = info.sample

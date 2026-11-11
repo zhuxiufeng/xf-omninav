@@ -649,6 +649,115 @@ class Cat(Mammal):
     assert.ok(diags[0].message.includes('最多接收 1 个位置参数'));
   });
 
+  await t.test('Bug Fix: parseTypeScriptSignature should never treat callback arrow type (=> void) as default parameter', () => {
+    const sig = inspector.parseTypeScriptSignature('function register(name: string, callback: () => void, timeout: number = 1000): void');
+    assert.ok(sig);
+    assert.equal(sig.params.length, 3);
+    assert.equal(sig.params[0].name, 'name');
+    assert.equal(sig.params[0].hasDefault, false);
+    assert.equal(sig.params[1].name, 'callback');
+    assert.equal(sig.params[1].type, '() => void');
+    assert.equal(sig.params[1].hasDefault, false, 'Callback parameter must NOT be marked as hasDefault');
+    assert.equal(sig.params[2].name, 'timeout');
+    assert.equal(sig.params[2].hasDefault, true);
+    assert.equal(sig.minPositional, 2, 'Must require both name and callback');
+    assert.equal(sig.maxPositional, 3);
+  });
+
+  await t.test('Bug Fix: parseCallArguments should handle backticks and escaped backslashes', () => {
+    const doc = new (vscode as any).MockTextDocument(
+      'call(`result: (${value})`, "C:\\\\path\\\\to\\\\dir", 42)',
+      '/workspace/test_quotes.js',
+      'javascript'
+    );
+    const args = inspector.parseCallArguments(doc, 0, 4);
+    assert.ok(args);
+    assert.equal(args.positionalCount, 3);
+    assert.equal(args.items.length, 3);
+    assert.equal(args.items[0].text, '`result: (${value})`');
+    assert.equal(args.items[1].text, '"C:\\\\path\\\\to\\\\dir"');
+    assert.equal(args.items[2].text, '42');
+  });
+
+  await t.test('Bug Fix: SymbolParser should parse multiline Python function with typed parameters without truncating at colon', () => {
+    const code = `
+def process_stream(
+    stream_id: str,
+    buffer_size: int = 4096,
+) -> bool:
+    pass
+`;
+    const symbols = SymbolParser.parseText(code, vscode.Uri.file('/workspace/multiline_test.py'), 'python');
+    assert.equal(symbols.length, 1);
+    assert.equal(symbols[0].name, 'process_stream');
+    assert.ok(symbols[0].signature.includes('stream_id: str'));
+    assert.ok(symbols[0].signature.includes('buffer_size: int = 4096'));
+    assert.ok(symbols[0].signature.endsWith(') -> bool'));
+
+    const parsedSig = inspector.parsePythonSignature(symbols[0].signature);
+    assert.ok(parsedSig);
+    assert.equal(parsedSig.minPositional, 1);
+    assert.equal(parsedSig.maxPositional, 2);
+  });
+
+  await t.test('Bug Fix: SymbolParser should parse TypeScript methods with override keyword and callback parameters', () => {
+    const code = `
+class Worker {
+    public override execute(callback: () => void): void {
+        callback();
+    }
+}
+`;
+    const symbols = SymbolParser.parseText(code, vscode.Uri.file('/workspace/ts_override.ts'), 'typescript');
+    const method = symbols.find((s) => s.name === 'execute');
+    assert.ok(method, 'Should successfully parse override method');
+    assert.equal(method.kind, 'method');
+    assert.equal(method.containerName, 'Worker');
+  });
+
+  await t.test('Bug Fix: inspectDocument should detect missing required keyword-only parameter without default', async () => {
+    const serverDoc = new (vscode as any).MockTextDocument(
+      `class ApiClient:
+    def create_session(self, user_id, *, api_token, timeout=30):
+        pass
+`,
+      '/workspace/api_client.py',
+      'python'
+    );
+    await indexer.indexDocument(serverDoc);
+
+    const callDoc = new (vscode as any).MockTextDocument(
+      `class Service:
+    def __init__(self):
+        self.api = ApiClient()
+    def run(self):
+        self.api.create_session('user123')
+`,
+      '/workspace/service.py',
+      'python'
+    );
+    await indexer.indexDocument(callDoc);
+
+    const diags = inspector.inspectDocument(callDoc);
+    const missingDiag = diags.find((d) => d.code === 'missing-arguments');
+    assert.ok(missingDiag, 'Should flag missing required keyword-only argument api_token');
+    assert.ok(missingDiag.message.includes('api_token'));
+  });
+
+  await t.test('Bug Fix: ContextResolver should infer Dog from x: None | Dog', () => {
+    const doc = new (vscode as any).MockTextDocument(
+      `class Handler:
+    def handle(self):
+        d: None | Dog = None
+        d.bark()
+`,
+      '/workspace/union_test.py',
+      'python'
+    );
+    const inferred = ContextResolver.inferVariableType(doc, 'd', 3);
+    assert.equal(inferred, 'Dog', 'Should skip None and infer Dog');
+  });
+
   await t.test('OmniStatusBar: should format symbol count and indexing status cleanly', async () => {
     const statusBar = new OmniStatusBar(indexer);
     statusBar.update();

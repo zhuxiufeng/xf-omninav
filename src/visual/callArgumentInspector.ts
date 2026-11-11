@@ -328,8 +328,14 @@ export class CallArgumentInspector implements vscode.Disposable {
     for (let i = 0; i < rawParams.length; i++) {
       const ch = rawParams[i];
       if (ch === '(' || ch === '[' || ch === '{' || ch === '<') depth++;
-      else if (ch === ')' || ch === ']' || ch === '}' || ch === '>') depth--;
-      else if (ch === ',' && depth === 0) {
+      else if (ch === ')' || ch === ']' || ch === '}') depth--;
+      else if (ch === '>') {
+        if (i > 0 && rawParams[i - 1] === '=') {
+          // '=>' in arrow function type; do NOT decrement depth
+        } else {
+          depth--;
+        }
+      } else if (ch === ',' && depth === 0) {
         if (cur.trim()) params.push(cur.trim());
         cur = '';
         continue;
@@ -346,14 +352,16 @@ export class CallArgumentInspector implements vscode.Disposable {
         hasVarargs = true;
         continue;
       }
-      const hasDefault = p.includes('=') || p.includes('?:');
+      // Look for '=' that is NOT part of '=>'
+      const eqMatch = p.match(/=(?!>)/);
+      const eqIdx = eqMatch ? eqMatch.index! : -1;
+      const hasDefault = /\?\s*:/.test(p) || eqIdx !== -1;
       const name = p.split(/[:?=]/)[0].trim().replace(/^public\s+|^private\s+|^protected\s+|^readonly\s+/, '');
       if (name === 'this') continue;
 
       let type: string | undefined = undefined;
       let defaultValue: string | undefined = undefined;
       const colonIdx = p.indexOf(':');
-      const eqIdx = p.indexOf('=');
       if (colonIdx !== -1) {
         if (eqIdx !== -1 && eqIdx > colonIdx) {
           type = p.slice(colonIdx + 1, eqIdx).trim();
@@ -656,17 +664,25 @@ export class CallArgumentInspector implements vscode.Disposable {
         return '';
       });
 
+    const isEscaped = (text: string, pos: number): boolean => {
+      let backslashes = 0;
+      for (let idx = pos - 1; idx >= 0 && text[idx] === '\\'; idx--) {
+        backslashes++;
+      }
+      return backslashes % 2 === 1;
+    };
+
     while (curLine <= maxLine) {
       const line = fetchLine(curLine);
       if (line === undefined || line === null) break;
       for (let c = curCol; c < line.length; c++) {
         const ch = line[c];
         if (inQuote) {
-          if (ch === inQuote && line[c - 1] !== '\\') inQuote = null;
+          if (ch === inQuote && !isEscaped(line, c)) inQuote = null;
           argText += ch;
           continue;
         }
-        if (ch === '"' || ch === "'") {
+        if (ch === '"' || ch === "'" || ch === '`') {
           inQuote = ch;
           argText += ch;
           continue;
@@ -733,10 +749,10 @@ export class CallArgumentInspector implements vscode.Disposable {
     for (let i = 0; i < argText.length; i++) {
       const ch = argText[i];
       if (inQuote) {
-        if (ch === inQuote && argText[i - 1] !== '\\') inQuote = null;
+        if (ch === inQuote && !isEscaped(argText, i)) inQuote = null;
         continue;
       }
-      if (ch === '"' || ch === "'") {
+      if (ch === '"' || ch === "'" || ch === '`') {
         inQuote = ch;
         continue;
       }
@@ -1146,9 +1162,12 @@ export class CallArgumentInspector implements vscode.Disposable {
           let kwOnlyParamName = '';
           for (const s of sigInfos) {
             if (s.keywordOnlyParams && s.keywordOnlyParams.length > 0) {
-              isKwOnlyViolation = true;
-              kwOnlyParamName = s.keywordOnlyParams[0].name;
-              break;
+              const kwIndex = effectivePositionalCount - maxAllowed - 1;
+              if (kwIndex >= 0 && kwIndex < s.keywordOnlyParams.length) {
+                isKwOnlyViolation = true;
+                kwOnlyParamName = s.keywordOnlyParams[kwIndex].name;
+                break;
+              }
             }
           }
 
@@ -1202,6 +1221,14 @@ export class CallArgumentInspector implements vscode.Disposable {
               if (pIdx < effectivePositionalCount) continue;
               if (callArgs.keywords.includes(p.name)) continue;
               missingForThisSig.push(p.name);
+            }
+            // Check required keyword-only parameters without default values
+            if (s.keywordOnlyParams) {
+              for (const kwp of s.keywordOnlyParams) {
+                if (!kwp.hasDefault && !callArgs.keywords.includes(kwp.name)) {
+                  missingForThisSig.push(kwp.name);
+                }
+              }
             }
             if (missingForThisSig.length === 0) {
               allMissingRequired = false;

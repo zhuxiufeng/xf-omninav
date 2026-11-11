@@ -78,7 +78,6 @@ export class CallArgumentCodeActionProvider implements vscode.CodeActionProvider
             }
             action.edit = edit;
             actions.push(action);
-          }
 
             // Offer action to inspect or jump to definition to add parameter
             const exactDefs = this.indexer.findExact(matchingCall.methodName);
@@ -117,6 +116,7 @@ export class CallArgumentCodeActionProvider implements vscode.CodeActionProvider
               };
               actions.push(jumpAction);
             }
+          }
         }
       } else if (diag.code === 'missing-arguments') {
         if (matchingCall) {
@@ -130,7 +130,7 @@ export class CallArgumentCodeActionProvider implements vscode.CodeActionProvider
           action.diagnostics = [diag];
           const edit = new vscode.WorkspaceEdit();
           const insertText =
-            matchingCall.callArgs.positionalCount > 0
+            matchingCall.callArgs.items.length > 0
               ? `, ${missingParams}`
               : missingParams;
           edit.insert(document.uri, matchingCall.callArgs.closeParenPos, insertText);
