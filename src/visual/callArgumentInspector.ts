@@ -10,6 +10,7 @@ export interface ParamSpec {
   isVararg: boolean; // *args
   isVarkwarg: boolean; // **kwargs
   isKeywordOnly: boolean;
+  isPositionalOnly?: boolean; // PEP 570 /
   type?: string;
   defaultValue?: string;
   description?: string;
@@ -23,6 +24,7 @@ export interface FunctionSignatureInfo {
   hasVarkwargs: boolean;
   params: ParamSpec[];
   keywordOnlyParams?: ParamSpec[];
+  positionalOnlyParams?: ParamSpec[];
 }
 
 export interface RawArgumentItem {
@@ -457,7 +459,12 @@ export class CallArgumentInspector implements vscode.Disposable {
     let isKwOnly = false;
 
     for (const p of params) {
-      if (p === '/') continue;
+      if (p === '/') {
+        for (const pos of positionalParams) {
+          pos.isPositionalOnly = true;
+        }
+        continue;
+      }
       if (p === '*') {
         isKwOnly = true;
         continue;
@@ -521,6 +528,7 @@ export class CallArgumentInspector implements vscode.Disposable {
       if (!p.hasDefault) minPos++;
     }
 
+    const positionalOnlyParams = positionalParams.filter((p) => p.isPositionalOnly);
     const info: FunctionSignatureInfo = {
       name: '',
       minPositional: minPos,
@@ -529,6 +537,7 @@ export class CallArgumentInspector implements vscode.Disposable {
       hasVarkwargs,
       params: positionalParams.concat(keywordOnlyParams),
       keywordOnlyParams,
+      positionalOnlyParams: positionalOnlyParams.length > 0 ? positionalOnlyParams : undefined,
     };
 
     if (this.sigCache.size >= 1024) {
@@ -969,6 +978,32 @@ export class CallArgumentInspector implements vscode.Disposable {
         continue;
       }
       if (trimmed.startsWith('def ') || trimmed.startsWith('async def ')) {
+        const sig = this.parsePythonSignature(trimmed, Boolean(currentClassName));
+        if (sig) {
+          for (const p of sig.params) {
+            if (
+              p.defaultValue &&
+              (p.defaultValue === '[]' ||
+                p.defaultValue === '{}' ||
+                p.defaultValue.startsWith('[') ||
+                (p.defaultValue.startsWith('{') && !p.defaultValue.includes(':')))
+            ) {
+              const pIndex = line.indexOf(p.name);
+              const pRange =
+                pIndex !== -1
+                  ? new vscode.Range(lineIdx, pIndex, lineIdx, pIndex + p.name.length)
+                  : new vscode.Range(lineIdx, 0, lineIdx, line.length);
+              const diag = new vscode.Diagnostic(
+                pRange,
+                `XF OmniNav: 可变默认参数陷阱: 避免使用可变对象 (${p.name}=${p.defaultValue}) 作为默认参数，建议使用 None 并内部初始化`,
+                vscode.DiagnosticSeverity.Warning
+              );
+              diag.source = 'XF OmniNav';
+              diag.code = 'mutable-default-argument';
+              diagnostics.push(diag);
+            }
+          }
+        }
         continue;
       }
 
@@ -1354,6 +1389,122 @@ export class CallArgumentInspector implements vscode.Disposable {
                     },
                   });
                 }
+              }
+            }
+          }
+        }
+
+        // 4. Check: Duplicate keyword argument definition (SyntaxError: keyword argument repeated)
+        const seenKeywords = new Set<string>();
+        for (const item of callArgs.items) {
+          if (item.isKeyword && item.keywordName) {
+            if (seenKeywords.has(item.keywordName)) {
+              const diag = new vscode.Diagnostic(
+                item.range,
+                `XF OmniNav: '${methodName}' 关键字参数 '${item.keywordName}' 重复定义 (SyntaxError: keyword argument repeated)`,
+                severity
+              );
+              diag.source = 'XF OmniNav';
+              diag.code = 'duplicate-keyword-argument';
+              diagnostics.push(diag);
+
+              if (enableHighlight) {
+                decorations.push({
+                  range: item.range,
+                  hoverMessage: new vscode.MarkdownString(
+                    `**XF OmniNav: 重复关键字参数 (SyntaxError)**\n\n函数调用中关键字参数 **${item.keywordName}** 被重复指定。`
+                  ),
+                  renderOptions: {
+                    after: {
+                      contentText: ` ❗关键字 '${item.keywordName}' 重复定义`,
+                      color: '#ff4d4f',
+                      fontWeight: 'bold',
+                      fontStyle: 'normal',
+                      margin: '0 0 0 8px',
+                    },
+                  },
+                });
+              }
+            }
+            seenKeywords.add(item.keywordName);
+          }
+        }
+
+        // 5. Check: Multiple values for argument (passed positionally and by keyword)
+        if (effectivePositionalCount > 0 && callArgs.keywords.length > 0) {
+          for (const s of sigInfos) {
+            for (let pIdx = 0; pIdx < Math.min(effectivePositionalCount, s.params.length); pIdx++) {
+              const p = s.params[pIdx];
+              if (!p || p.isVararg || p.isVarkwarg || p.name === 'self' || p.name === 'cls') continue;
+              if (callArgs.keywords.includes(p.name)) {
+                const kwItem = callArgs.items.find((it) => it.isKeyword && it.keywordName === p.name);
+                const targetRange = kwItem ? kwItem.range : callArgs.argRange;
+                const diag = new vscode.Diagnostic(
+                  targetRange,
+                  `XF OmniNav: '${methodName}' 形参 '${p.name}' 接收到了多个传值（同时以位置参数和关键字参数传入，TypeError: got multiple values for argument)`,
+                  severity
+                );
+                diag.source = 'XF OmniNav';
+                diag.code = 'duplicate-argument-value';
+                diagnostics.push(diag);
+
+                if (enableHighlight) {
+                  decorations.push({
+                    range: targetRange,
+                    hoverMessage: new vscode.MarkdownString(
+                      `**XF OmniNav: 形参重复传值 (TypeError)**\n\n形参 **${p.name}** 已在第 ${pIdx + 1} 个位置参数中传值，同时又以关键字 \`${p.name}=...\` 传入。`
+                    ),
+                    renderOptions: {
+                      after: {
+                        contentText: ` ❗形参 '${p.name}' 接收到重复传值`,
+                        color: '#ff4d4f',
+                        fontWeight: 'bold',
+                        fontStyle: 'normal',
+                        margin: '0 0 0 8px',
+                      },
+                    },
+                  });
+                }
+                break;
+              }
+            }
+          }
+        }
+
+        // 6. Check: Positional-only parameter passed as keyword (PEP 570)
+        if (callArgs.keywords.length > 0) {
+          for (const item of callArgs.items) {
+            if (!item.isKeyword || !item.keywordName) continue;
+            const kw = item.keywordName;
+            const isPosOnly = sigInfos.some((s) =>
+              s.positionalOnlyParams?.some((p) => p.name === kw)
+            );
+            if (isPosOnly) {
+              const diag = new vscode.Diagnostic(
+                item.range,
+                `XF OmniNav: '${kw}' 为仅位置形参 (PEP 570)，不能以关键字形式传参 (TypeError: got some positional-only arguments passed as keyword arguments)`,
+                severity
+              );
+              diag.source = 'XF OmniNav';
+              diag.code = 'positional-only-as-keyword';
+              diagnostics.push(diag);
+
+              if (enableHighlight) {
+                decorations.push({
+                  range: item.range,
+                  hoverMessage: new vscode.MarkdownString(
+                    `**XF OmniNav: 仅位置形参错误 (PEP 570)**\n\n形参 **${kw}** 声明为仅位置形参（位于 \`/\` 前），不能以关键字形式传参。`
+                  ),
+                  renderOptions: {
+                    after: {
+                      contentText: ` ❗'${kw}' 只能以位置形式传参 (PEP 570)`,
+                      color: '#ff4d4f',
+                      fontWeight: 'bold',
+                      fontStyle: 'normal',
+                      margin: '0 0 0 8px',
+                    },
+                  },
+                });
               }
             }
           }

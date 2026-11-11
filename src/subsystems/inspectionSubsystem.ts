@@ -8,6 +8,8 @@ import {
   addParameterToMethodDefinition,
 } from '../visual/callArgumentCodeActions';
 import { DynamicTypeHoverProvider } from '../navigation/dynamicTypeHoverProvider';
+import { PythonSignatureHelpProvider } from '../navigation/pythonSignatureHelpProvider';
+import { PythonKeywordCompletionProvider } from '../navigation/pythonKeywordCompletionProvider';
 
 /**
  * Subsystem responsible for PyCharm-grade heuristic call argument inspection,
@@ -85,6 +87,41 @@ export class InspectionSubsystem implements vscode.Disposable {
       }
     } catch (err) {
       outputChannel.appendLine(`[XF OmniNav] HoverProvider registration warning: ${err}`);
+    }
+
+    // 4.5 Python Signature Help Provider
+    try {
+      const sigHelpProvider = new PythonSignatureHelpProvider(this.inspector, this.indexer);
+      if (typeof vscode.languages.registerSignatureHelpProvider === 'function') {
+        context.subscriptions.push(
+          vscode.languages.registerSignatureHelpProvider(
+            { language: 'python' },
+            sigHelpProvider,
+            '(',
+            ','
+          )
+        );
+      }
+    } catch (err) {
+      outputChannel.appendLine(`[XF OmniNav] SignatureHelp registration warning: ${err}`);
+    }
+
+    // 4.6 Python Keyword Argument Completion Provider
+    try {
+      const keywordCompletionProvider = new PythonKeywordCompletionProvider(this.inspector, this.indexer);
+      if (typeof vscode.languages.registerCompletionItemProvider === 'function') {
+        context.subscriptions.push(
+          vscode.languages.registerCompletionItemProvider(
+            { language: 'python' },
+            keywordCompletionProvider,
+            '(',
+            ',',
+            ' '
+          )
+        );
+      }
+    } catch (err) {
+      outputChannel.appendLine(`[XF OmniNav] KeywordCompletion registration warning: ${err}`);
     }
 
     // 5. Register Inspection Commands

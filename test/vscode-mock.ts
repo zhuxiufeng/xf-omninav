@@ -349,6 +349,8 @@ export const languages = {
   registerCodeActionsProvider: () => ({ dispose: () => {} }),
   registerCodeActionProvider: () => ({ dispose: () => {} }),
   registerFoldingRangeProvider: () => ({ dispose: () => {} }),
+  registerSignatureHelpProvider: () => ({ dispose: () => {} }),
+  registerCompletionItemProvider: () => ({ dispose: () => {} }),
 };
 
 export class Hover {
@@ -356,6 +358,53 @@ export class Hover {
   constructor(contents: any, public range?: Range) {
     this.contents = Array.isArray(contents) ? contents : [contents];
   }
+}
+
+export enum CompletionItemKind {
+  Text = 0,
+  Method = 1,
+  Function = 2,
+  Constructor = 3,
+  Field = 4,
+  Variable = 5,
+  Class = 6,
+  Interface = 7,
+  Module = 8,
+  Property = 9,
+}
+
+export class CompletionItem {
+  public detail?: string;
+  public documentation?: string | MarkdownString;
+  public sortText?: string;
+  public filterText?: string;
+  public insertText?: string | SnippetString;
+  constructor(public label: string, public kind?: CompletionItemKind) {}
+}
+
+export class SnippetString {
+  constructor(public value: string = '') {}
+}
+
+export class ParameterInformation {
+  public documentation?: string | MarkdownString;
+  constructor(public label: string, documentation?: string | MarkdownString) {
+    this.documentation = documentation;
+  }
+}
+
+export class SignatureInformation {
+  public documentation?: string | MarkdownString;
+  public parameters: ParameterInformation[] = [];
+  constructor(public label: string, documentation?: string | MarkdownString) {
+    this.documentation = documentation;
+  }
+}
+
+export class SignatureHelp {
+  public signatures: SignatureInformation[] = [];
+  public activeSignature: number = 0;
+  public activeParameter: number = 0;
 }
 
 export enum CodeActionKind {

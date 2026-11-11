@@ -202,6 +202,64 @@ export class CallArgumentCodeActionProvider implements vscode.CodeActionProvider
             }
           }
         }
+      } else if (diag.code === 'duplicate-keyword-argument' || diag.code === 'duplicate-argument-value') {
+        if (matchingCall) {
+          const dupItem = matchingCall.callArgs.items.find(
+            (it) => it.isKeyword && (it.range.contains(diag.range.start) || diag.range.contains(it.range))
+          );
+          if (dupItem) {
+            const action = new vscode.CodeAction(
+              `XF OmniNav: 移除重复关键字传参 '${dupItem.keywordName}'`,
+              vscode.CodeActionKind.QuickFix
+            );
+            action.isPreferred = true;
+            action.diagnostics = [diag];
+            const edit = new vscode.WorkspaceEdit();
+            edit.delete(document.uri, dupItem.removalRange);
+            action.edit = edit;
+            actions.push(action);
+          }
+        }
+      } else if (diag.code === 'positional-only-as-keyword') {
+        if (matchingCall) {
+          const posOnlyItem = matchingCall.callArgs.items.find(
+            (it) => it.isKeyword && (it.range.contains(diag.range.start) || diag.range.contains(it.range))
+          );
+          if (posOnlyItem && posOnlyItem.valueText) {
+            const action = new vscode.CodeAction(
+              `XF OmniNav: 转换为位置参数形式 (去掉 '${posOnlyItem.keywordName}=')`,
+              vscode.CodeActionKind.QuickFix
+            );
+            action.isPreferred = true;
+            action.diagnostics = [diag];
+            const edit = new vscode.WorkspaceEdit();
+            edit.replace(document.uri, posOnlyItem.range, posOnlyItem.valueText);
+            action.edit = edit;
+            actions.push(action);
+          }
+        }
+      } else if (diag.code === 'mutable-default-argument') {
+        const lineText = document.lineAt(diag.range.start.line).text;
+        const defaultMatch = lineText.match(/=\s*(\[.*?\]|\{.*?\})/);
+        if (defaultMatch) {
+          const eqIndex = lineText.indexOf(defaultMatch[0]);
+          const range = new vscode.Range(
+            diag.range.start.line,
+            eqIndex,
+            diag.range.start.line,
+            eqIndex + defaultMatch[0].length
+          );
+          const action = new vscode.CodeAction(
+            'XF OmniNav: 替换为 None 默认参数 (=None)',
+            vscode.CodeActionKind.QuickFix
+          );
+          action.isPreferred = true;
+          action.diagnostics = [diag];
+          const edit = new vscode.WorkspaceEdit();
+          edit.replace(document.uri, range, '=None');
+          action.edit = edit;
+          actions.push(action);
+        }
       }
     }
 

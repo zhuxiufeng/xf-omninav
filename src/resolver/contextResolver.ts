@@ -271,6 +271,33 @@ export class ContextResolver {
     };
   }
 
+  private static variablePatternCache = new Map<string, RegExp[]>();
+
+  private static getVariablePatterns(escaped: string): RegExp[] {
+    let patterns = this.variablePatternCache.get(escaped);
+    if (!patterns) {
+      if (this.variablePatternCache.size > 500) {
+        this.variablePatternCache.clear();
+      }
+      patterns = [
+        // const x = new Dog(...) or x = Dog(...) or x = module.sub.Dog(...)
+        new RegExp(`(?:const|let|var\\s+)?${escaped}\\s*=\\s*(?:new\\s+)?(?:[A-Za-z0-9_]+\\.)*([A-Z][A-Za-z0-9_]*)\\s*\\(`),
+        // x: Dog = ... or x: Optional[Dog] = ... or x: Union[Dog, None] = ...
+        new RegExp(`(?:const|let|var\\s+)?${escaped}\\s*:\\s*(?:Optional\\[|Union\\[)?([A-Z][A-Za-z0-9_]*)\\b`),
+        // def func(x: Dog): or def func(self, x: Optional[Dog]):
+        new RegExp(`(?:def|function)\\s+[A-Za-z0-9_]+\\s*\\(.*?[(\\s,]${escaped}\\s*:\\s*(?:Optional\\[|Union\\[)?([A-Z][A-Za-z0-9_]*)`),
+        // Multiline parameter annotation: x: Dog,
+        new RegExp(`^[\\s,]*${escaped}\\s*:\\s*(?:Optional\\[|Union\\[)?([A-Z][A-Za-z0-9_]*)\\b`),
+        // (x as Dog)
+        new RegExp(`\\(${escaped}\\s+as\\s+([A-Z][A-Za-z0-9_]*)\\)`),
+        // Generic service locator / component factory: x = get_service('auth') or lookup_object('nozzle') or get_component('...')
+        new RegExp(`${escaped}\\s*=\\s*.*?(?:lookup_object|load_object|get_service|get_component|resolve|get_instance|get_client|create_client)\\s*\\(\\s*['"]([A-Za-z0-9_]+)['"]`),
+      ];
+      this.variablePatternCache.set(escaped, patterns);
+    }
+    return patterns;
+  }
+
   /**
    * Scan upwards in current local scope to infer variable type.
    * e.g. `d = Dog()` or `d: Dog = ...` or `def test(d: Dog):`
@@ -285,20 +312,7 @@ export class ContextResolver {
     indexer?: any
   ): string | undefined {
     const escaped = varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const patterns = [
-      // const x = new Dog(...) or x = Dog(...) or x = module.sub.Dog(...)
-      new RegExp(`(?:const|let|var\\s+)?${escaped}\\s*=\\s*(?:new\\s+)?(?:[A-Za-z0-9_]+\\.)*([A-Z][A-Za-z0-9_]*)\\s*\\(`),
-      // x: Dog = ... or x: Optional[Dog] = ... or x: Union[Dog, None] = ...
-      new RegExp(`(?:const|let|var\\s+)?${escaped}\\s*:\\s*(?:Optional\\[|Union\\[)?([A-Z][A-Za-z0-9_]*)\\b`),
-      // def func(x: Dog): or def func(self, x: Optional[Dog]):
-      new RegExp(`(?:def|function)\\s+[A-Za-z0-9_]+\\s*\\(.*?[(\\s,]${escaped}\\s*:\\s*(?:Optional\\[|Union\\[)?([A-Z][A-Za-z0-9_]*)`),
-      // Multiline parameter annotation: x: Dog,
-      new RegExp(`^[\\s,]*${escaped}\\s*:\\s*(?:Optional\\[|Union\\[)?([A-Z][A-Za-z0-9_]*)\\b`),
-      // (x as Dog)
-      new RegExp(`\\(${escaped}\\s+as\\s+([A-Z][A-Za-z0-9_]*)\\)`),
-      // Generic service locator / component factory: x = get_service('auth') or lookup_object('nozzle') or get_component('...')
-      new RegExp(`${escaped}\\s*=\\s*.*?(?:lookup_object|load_object|get_service|get_component|resolve|get_instance|get_client|create_client)\\s*\\(\\s*['"]([A-Za-z0-9_]+)['"]`),
-    ];
+    const patterns = this.getVariablePatterns(escaped);
 
     const minLine = Math.max(0, callLine - 60);
     for (let i = callLine - 1; i >= minLine; i--) {

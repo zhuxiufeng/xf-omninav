@@ -18,6 +18,7 @@ import { HierarchyTreeViewer } from '../src/visual/hierarchyTree';
 test('CallArgumentInspector tests', async (t) => {
   const indexer = new SymbolIndexer({ subscriptions: [] } as any);
   const inspector = new CallArgumentInspector(indexer);
+  const codeActions = new CallArgumentCodeActionProvider(inspector, indexer);
 
   await t.test('parsePythonSignature: should correctly parse method parameters and positional bounds', () => {
     // 1. Zero-param method
@@ -868,6 +869,181 @@ class Worker {
 
     const printerType = ContextResolver.inferVariableType(doc, 'p', 3);
     assert.equal(printerType, 'Printer', 'Should infer p from config.get_printer()');
+  });
+
+  await t.test('PEP 570: should flag positional-only parameter passed as keyword and offer QuickFix', async () => {
+    const apiDoc = new (vscode as any).MockTextDocument(
+      `def format_data(data, format_type='json', /):
+    pass
+`,
+      '/workspace/formatter.py',
+      'python'
+    );
+    await indexer.indexDocument(apiDoc);
+
+    const callerDoc = new (vscode as any).MockTextDocument(
+      `def run():
+    format_data("hello", format_type='xml')
+`,
+      '/workspace/caller.py',
+      'python'
+    );
+    await indexer.indexDocument(callerDoc);
+
+    const diags = inspector.inspectDocument(callerDoc);
+    const posOnlyDiag = diags.find((d) => d.code === 'positional-only-as-keyword');
+    assert.ok(posOnlyDiag, 'Should flag positional-only-as-keyword diagnostic');
+    assert.ok(posOnlyDiag.message.includes('format_type'));
+    assert.ok(posOnlyDiag.message.includes('PEP 570'));
+
+    const actions = codeActions.provideCodeActions(callerDoc, callerDoc.lineAt(1).range, { diagnostics: [posOnlyDiag] } as any, {} as any);
+    const convertAction = actions.find((a) => a.title.includes('转换为位置参数形式'));
+    assert.ok(convertAction, 'Should offer QuickFix to convert positional-only keyword to positional value');
+  });
+
+  await t.test('Multiple values for argument: should detect parameter passed positionally and by keyword', async () => {
+    const netDoc = new (vscode as any).MockTextDocument(
+      `def connect(ip, port=8080):
+    pass
+`,
+      '/workspace/network.py',
+      'python'
+    );
+    await indexer.indexDocument(netDoc);
+
+    const callerDoc = new (vscode as any).MockTextDocument(
+      `def test_connect():
+    connect('127.0.0.1', 8080, port=9000)
+`,
+      '/workspace/net_test.py',
+      'python'
+    );
+    await indexer.indexDocument(callerDoc);
+
+    const diags = inspector.inspectDocument(callerDoc);
+    const dupValDiag = diags.find((d) => d.code === 'duplicate-argument-value');
+    assert.ok(dupValDiag, 'Should detect duplicate value for port');
+    assert.ok(dupValDiag.message.includes('port'));
+    assert.ok(dupValDiag.message.includes('TypeError: got multiple values for argument'));
+  });
+
+  await t.test('Duplicate keyword argument: should detect repeated keyword in function call', async () => {
+    const netDoc = new (vscode as any).MockTextDocument(
+      `def connect(ip, port=8080):
+    pass
+`,
+      '/workspace/network.py',
+      'python'
+    );
+    await indexer.indexDocument(netDoc);
+
+    const callerDoc = new (vscode as any).MockTextDocument(
+      `def test_connect():
+    connect('127.0.0.1', port=8080, port=9000)
+`,
+      '/workspace/net_test.py',
+      'python'
+    );
+    await indexer.indexDocument(callerDoc);
+
+    const diags = inspector.inspectDocument(callerDoc);
+    const dupKwDiag = diags.find((d) => d.code === 'duplicate-keyword-argument');
+    assert.ok(dupKwDiag, 'Should detect repeated keyword argument port');
+    assert.ok(dupKwDiag.message.includes('SyntaxError: keyword argument repeated'));
+  });
+
+  await t.test('Mutable default argument: should warn on list or dict default value in function definitions', () => {
+    const doc = new (vscode as any).MockTextDocument(
+      `def append_item(val, target=[]):
+    pass
+def configure(options={}):
+    pass
+`,
+      '/workspace/utils.py',
+      'python'
+    );
+
+    const diags = inspector.inspectDocument(doc);
+    const mutableDiags = diags.filter((d) => d.code === 'mutable-default-argument');
+    assert.equal(mutableDiags.length, 2, 'Should flag mutable-default-argument on both list and dict defaults');
+    assert.ok(mutableDiags[0].message.includes('target=[]'));
+    assert.ok(mutableDiags[1].message.includes('options={}'));
+  });
+
+  await t.test('PythonSignatureHelpProvider: should provide active parameter highlighting and docstrings', async () => {
+    const { PythonSignatureHelpProvider } = await import('../src/navigation/pythonSignatureHelpProvider');
+    const sigProvider = new PythonSignatureHelpProvider(inspector, indexer);
+
+    const defDoc = new (vscode as any).MockTextDocument(
+      `class DeviceHub:
+    def send_command(self, cmd: str, timeout: int = 10, retry: bool = True):
+        """Send command to device.
+        :param cmd: The command string
+        :param timeout: Seconds before timeout
+        """
+        pass
+`,
+      '/workspace/hub.py',
+      'python'
+    );
+    await indexer.indexDocument(defDoc);
+
+    const callerDoc = new (vscode as any).MockTextDocument(
+      `def run(hub):
+    hub.send_command("RESET", 5, 
+`,
+      '/workspace/caller.py',
+      'python'
+    );
+
+    const help = await sigProvider.provideSignatureHelp(
+      callerDoc,
+      new (vscode as any).Position(1, 33),
+      {} as any,
+      {} as any
+    );
+
+    assert.ok(help, 'Should return SignatureHelp');
+    assert.equal(help.activeParameter, 2, 'Should highlight activeParameter 2 (retry)');
+    assert.ok(help.signatures[0].label.includes('send_command'));
+    assert.equal(help.signatures[0].parameters.length, 3);
+  });
+
+  await t.test('PythonKeywordCompletionProvider: should suggest unpassed keyword parameters with snippet', async () => {
+    const { PythonKeywordCompletionProvider } = await import('../src/navigation/pythonKeywordCompletionProvider');
+    const compProvider = new PythonKeywordCompletionProvider(inspector, indexer);
+
+    const defDoc = new (vscode as any).MockTextDocument(
+      `class DeviceHub:
+    def send_command(self, cmd: str, timeout: int = 10, retry: bool = True):
+        pass
+`,
+      '/workspace/hub.py',
+      'python'
+    );
+    await indexer.indexDocument(defDoc);
+
+    const callerDoc = new (vscode as any).MockTextDocument(
+      `def run(hub):
+    hub.send_command("RESET", 
+`,
+      '/workspace/caller.py',
+      'python'
+    );
+
+    const items = await compProvider.provideCompletionItems(
+      callerDoc,
+      new (vscode as any).Position(1, 30),
+      {} as any,
+      {} as any
+    );
+
+    assert.ok(items && items.length > 0, 'Should return completion items');
+    const timeoutItem = items.find((it) => it.label === 'timeout=');
+    const retryItem = items.find((it) => it.label === 'retry=');
+    assert.ok(timeoutItem, 'Should suggest timeout= keyword argument');
+    assert.ok(retryItem, 'Should suggest retry= keyword argument');
+    assert.ok(timeoutItem.insertText?.value.includes('timeout='), 'Should use snippet insertText');
   });
 
   await t.test('OmniStatusBar: should format symbol count and indexing status cleanly', async () => {
