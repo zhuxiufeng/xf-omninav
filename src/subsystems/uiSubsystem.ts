@@ -29,6 +29,10 @@ export class UiSubsystem implements vscode.Disposable {
     });
   }
 
+  public updateIndexStatusBar(totalSymbols?: number): void {
+    this.omniStatusBar.update();
+  }
+
   public dispose(): void {
     for (const d of this.disposables) {
       d.dispose();

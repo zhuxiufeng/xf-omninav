@@ -261,6 +261,9 @@ export const workspace = {
     return new MockTextDocument('', uri.toString(), 'python');
   },
   onDidSaveTextDocument: () => ({ dispose: () => {} }),
+  onDidOpenTextDocument: () => ({ dispose: () => {} }),
+  onDidCloseTextDocument: () => ({ dispose: () => {} }),
+  onDidChangeConfiguration: () => ({ dispose: () => {} }),
   onDidChangeTextDocument: () => ({ dispose: () => {} }),
   createFileSystemWatcher: () => ({
     onDidCreate: () => ({ dispose: () => {} }),
@@ -272,6 +275,9 @@ export const workspace = {
 export const window = {
   activeTextEditor: undefined as any,
   visibleTextEditors: [] as any[],
+  onDidChangeActiveTextEditor: () => ({ dispose: () => {} }),
+  onDidChangeTextEditorSelection: () => ({ dispose: () => {} }),
+  onDidChangeTextEditorVisibleRanges: () => ({ dispose: () => {} }),
   showInformationMessage: async () => undefined,
   showWarningMessage: async () => undefined,
   showQuickPick: async () => undefined,
@@ -302,6 +308,15 @@ export const window = {
   createStatusBarItem: () => ({
     text: '',
     tooltip: '',
+    show: () => {},
+    hide: () => {},
+    dispose: () => {},
+  }),
+  createOutputChannel: (_name: string) => ({
+    name: _name,
+    append: (_val: string) => {},
+    appendLine: (_val: string) => {},
+    clear: () => {},
     show: () => {},
     hide: () => {},
     dispose: () => {},

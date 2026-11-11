@@ -349,7 +349,7 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
    * to prevent VS Code from showing duplicate entries in the Peek widget.
    */
   private isCoveredByLsp(
-    def: SymbolDefinition,
+    def: { uri: vscode.Uri; range: vscode.Range; selectionRange: vscode.Range },
     lspTargets: Array<{ uriStr: string; fsPath?: string; line: number; range?: vscode.Range }>
   ): boolean {
     if (lspTargets.length === 0) {
