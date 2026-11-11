@@ -14,6 +14,7 @@ export class SymbolIndexer implements vscode.Disposable {
   private fileMap: Map<string, SymbolDefinition[]> = new Map();
   private classHierarchy: Map<string, string[]> = new Map();
   private classMethods: Map<string, Set<string>> = new Map();
+  private directSubClasses: Map<string, Set<string>> = new Map(); // normalizedBaseClassName -> Set<subClassName>
   private fileClassesMap: Map<string, string[]> = new Map();
   private fileMtimeMap: Map<string, number> = new Map();
 
@@ -330,6 +331,15 @@ export class SymbolIndexer implements vscode.Disposable {
         fileClasses.push(def.name);
         if (def.parentContainers && def.parentContainers.length > 0) {
           this.classHierarchy.set(def.name, def.parentContainers);
+          for (const parent of def.parentContainers) {
+            const cleanParent = parent.toLowerCase().replace(/[^a-z0-9]/g, '');
+            let subSet = this.directSubClasses.get(cleanParent);
+            if (!subSet) {
+              subSet = new Set();
+              this.directSubClasses.set(cleanParent, subSet);
+            }
+            subSet.add(def.name);
+          }
         }
       } else if (def.kind === 'method' && def.containerName) {
         let methods = this.classMethods.get(def.containerName);
@@ -418,6 +428,19 @@ export class SymbolIndexer implements vscode.Disposable {
     const classes = this.fileClassesMap.get(uriStr);
     if (classes) {
       for (const cls of classes) {
+        const parents = this.classHierarchy.get(cls);
+        if (parents) {
+          for (const parent of parents) {
+            const cleanParent = parent.toLowerCase().replace(/[^a-z0-9]/g, '');
+            const subSet = this.directSubClasses.get(cleanParent);
+            if (subSet) {
+              subSet.delete(cls);
+              if (subSet.size === 0) {
+                this.directSubClasses.delete(cleanParent);
+              }
+            }
+          }
+        }
         this.classHierarchy.delete(cls);
         this.classMethods.delete(cls);
       }
@@ -572,17 +595,36 @@ export class SymbolIndexer implements vscode.Disposable {
   }
 
   /**
+   * Get direct subclasses of a base class in O(1) time.
+   */
+  public getDirectSubClasses(baseClassName: string): string[] {
+    const cleanBase = baseClassName.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const set = this.directSubClasses.get(cleanBase);
+    return set ? Array.from(set) : [];
+  }
+
+  /**
    * Get all subclasses that inherit directly or indirectly from baseClassName.
+   * Utilizes reverse adjacency graph index for O(Descendants) fast traversal.
    */
   public getSubClasses(baseClassName: string): string[] {
     const results: string[] = [];
     const cleanBase = baseClassName.toLowerCase().replace(/[^a-z0-9]/g, '');
-    for (const [subClass] of this.classHierarchy) {
-      const cleanSub = subClass.toLowerCase().replace(/[^a-z0-9]/g, '');
-      if (cleanSub === cleanBase) continue;
-      const ancestors = this.getSuperClasses(subClass);
-      if (ancestors.some((a) => a.toLowerCase().replace(/[^a-z0-9]/g, '') === cleanBase)) {
-        results.push(subClass);
+    const queue = [cleanBase];
+    const visited = new Set<string>([cleanBase]);
+
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      const children = this.directSubClasses.get(current);
+      if (children) {
+        for (const child of children) {
+          const cleanChild = child.toLowerCase().replace(/[^a-z0-9]/g, '');
+          if (!visited.has(cleanChild)) {
+            visited.add(cleanChild);
+            results.push(child);
+            queue.push(cleanChild);
+          }
+        }
       }
     }
     return results;
@@ -690,6 +732,7 @@ export class SymbolIndexer implements vscode.Disposable {
     this.fileMap.clear();
     this.classHierarchy.clear();
     this.classMethods.clear();
+    this.directSubClasses.clear();
     this.fileClassesMap.clear();
     this.fileMtimeMap.clear();
   }
@@ -788,23 +831,38 @@ export class SymbolIndexer implements vscode.Disposable {
 
       for (const [uriStr, serializedDefs] of data.files) {
         const uri = vscode.Uri.parse(uriStr);
-        const defs: SymbolDefinition[] = serializedDefs.map(
-          (d: any) =>
-            new CompactSymbolDefinition({
-              name: d.n,
-              kind: d.k,
+        const defs: SymbolDefinition[] = serializedDefs.map((d: any) => {
+          if (Array.isArray(d)) {
+            return new CompactSymbolDefinition({
+              name: d[0],
+              kind: d[1],
+              containerName: d[2],
+              parentContainers: d[3],
+              range: d[4],
+              selectionRange: d[5],
+              signature: d[6],
+              fileRelativePath: d[7],
+              isExported: d[8],
+              docstring: d[9],
+              isAbstract: d[10] === 1,
               uri,
-              range: d.r,
-              selectionRange: d.sr,
-              signature: d.s,
-              fileRelativePath: d.rel,
-              containerName: d.c,
-              parentContainers: d.p,
-              docstring: d.doc,
-              isExported: d.exp,
-              isAbstract: d.abs === 1,
-            })
-        );
+            });
+          }
+          return new CompactSymbolDefinition({
+            name: d.n,
+            kind: d.k,
+            uri,
+            range: d.r,
+            selectionRange: d.sr,
+            signature: d.s,
+            fileRelativePath: d.rel,
+            containerName: d.c,
+            parentContainers: d.p,
+            docstring: d.doc,
+            isExported: d.exp,
+            isAbstract: d.abs === 1,
+          });
+        });
         this.storeDefinitions(uriStr, defs);
       }
 
@@ -832,29 +890,29 @@ export class SymbolIndexer implements vscode.Disposable {
 
       const serializedFiles: [string, any[]][] = [];
       for (const [uriStr, defs] of this.fileMap.entries()) {
-        const fileDefs = defs.map((d: any) => ({
-          n: d.name,
-          k: d.kind,
-          c: d.containerName,
-          p: d.parentContainers,
-          r: d._r || [
+        const fileDefs = defs.map((d: any) => [
+          d.name,
+          d.kind,
+          d.containerName,
+          d.parentContainers,
+          d._r || [
             d.range.start.line,
             d.range.start.character,
             d.range.end.line,
             d.range.end.character,
           ],
-          sr: d._sr || [
+          d._sr || [
             d.selectionRange.start.line,
             d.selectionRange.start.character,
             d.selectionRange.end.line,
             d.selectionRange.end.character,
           ],
-          s: d.signature,
-          rel: d.fileRelativePath,
-          exp: d.isExported,
-          doc: d.docstring,
-          abs: d.isAbstract ? 1 : undefined,
-        }));
+          d.signature,
+          d.fileRelativePath,
+          d.isExported,
+          d.docstring,
+          d.isAbstract ? 1 : 0,
+        ]);
         serializedFiles.push([uriStr, fileDefs]);
       }
 

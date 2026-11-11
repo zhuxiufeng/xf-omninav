@@ -32,15 +32,34 @@ export class ParamInlayHintsProvider implements vscode.InlayHintsProvider {
     if (!isEnabled) return [];
 
     const calls = this.inspector.getCallsForDocument(document.uri);
+    if (!calls || calls.length === 0) return [];
     const hints: vscode.InlayHint[] = [];
 
-    for (const call of calls) {
+    // O(log N) binary search for the first call that can possibly intersect the viewport range
+    let low = 0;
+    let high = calls.length - 1;
+    let startIndex = 0;
+
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      const call = calls[mid];
+      if (call.targetRange && call.targetRange.end.line >= range.start.line) {
+        startIndex = mid;
+        high = mid - 1;
+      } else {
+        low = mid + 1;
+      }
+    }
+
+    for (let cIdx = startIndex; cIdx < calls.length; cIdx++) {
+      const call = calls[cIdx];
       if (!call.targetRange) continue;
-      // Only provide hints for calls within the requested viewport range
-      if (
-        call.targetRange.end.line < range.start.line ||
-        call.targetRange.start.line > range.end.line
-      ) {
+      // Since calls are strictly ordered by line ascending, once start.line exceeds range.end.line,
+      // subsequent calls cannot possibly be in the viewport! Break early!
+      if (call.targetRange.start.line > range.end.line) {
+        break;
+      }
+      if (call.targetRange.end.line < range.start.line) {
         continue;
       }
       if (call.sigInfos.length === 0) continue;

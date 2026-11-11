@@ -570,6 +570,41 @@ class AbstractWorker(ABC):
     reloadedIndexer.dispose();
   });
 
+  await t.test('Reverse Adjacency Index: should query direct and transitive subclasses in O(1)/O(Descendants)', async () => {
+    const testIndexer = new SymbolIndexer();
+    const doc = new (vscode as any).MockTextDocument(
+      `class Animal:
+    pass
+class Mammal(Animal):
+    pass
+class Dog(Mammal):
+    pass
+class Cat(Mammal):
+    pass
+`,
+      '/workspace/animals.py',
+      'python'
+    );
+    await testIndexer.indexDocument(doc);
+
+    // Direct subclasses (O(1))
+    const directToAnimal = testIndexer.getDirectSubClasses('Animal');
+    assert.deepEqual(directToAnimal, ['Mammal']);
+
+    const directToMammal = testIndexer.getDirectSubClasses('Mammal');
+    assert.ok(directToMammal.includes('Dog'));
+    assert.ok(directToMammal.includes('Cat'));
+
+    // Transitive subclasses
+    const allAnimalSubs = testIndexer.getSubClasses('Animal');
+    assert.equal(allAnimalSubs.length, 3);
+    assert.ok(allAnimalSubs.includes('Mammal'));
+    assert.ok(allAnimalSubs.includes('Dog'));
+    assert.ok(allAnimalSubs.includes('Cat'));
+
+    testIndexer.dispose();
+  });
+
   await t.test('OmniStatusBar: should format symbol count and indexing status cleanly', async () => {
     const statusBar = new OmniStatusBar(indexer);
     statusBar.update();

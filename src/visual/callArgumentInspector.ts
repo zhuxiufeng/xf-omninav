@@ -631,9 +631,9 @@ export class CallArgumentInspector implements vscode.Disposable {
   public parseCallArguments(
     document: vscode.TextDocument,
     lineIdx: number,
-    openParenChar: number
+    openParenChar: number,
+    getLineText?: (lineNum: number) => string
   ): CallArgumentResult | null {
-    const lines = document.getText().split(/\r?\n/);
     let depth = 1;
     let argText = '';
     let curLine = lineIdx;
@@ -643,9 +643,22 @@ export class CallArgumentInspector implements vscode.Disposable {
     let inQuote: string | null = null;
     let foundEnd = false;
 
-    const maxLine = Math.min(lines.length - 1, lineIdx + 25);
+    const totalLines = typeof document.lineCount === 'number' ? document.lineCount : 100000;
+    const maxLine = Math.min(totalLines - 1, lineIdx + 25);
+    const fetchLine =
+      getLineText ||
+      ((l: number) => {
+        if (typeof document.lineAt === 'function') {
+          try {
+            return document.lineAt(l).text;
+          } catch {}
+        }
+        return '';
+      });
+
     while (curLine <= maxLine) {
-      const line = lines[curLine];
+      const line = fetchLine(curLine);
+      if (line === undefined || line === null) break;
       for (let c = curCol; c < line.length; c++) {
         const ch = line[c];
         if (inQuote) {
@@ -885,11 +898,26 @@ export class CallArgumentInspector implements vscode.Disposable {
     const diagnostics: vscode.Diagnostic[] = [];
     const parsedCalls: ParsedCallInfo[] = [];
 
-    const text = document.getText();
-    const lines = text.split(/\r?\n/);
+    const totalLines =
+      typeof document.lineCount === 'number'
+        ? document.lineCount
+        : 100000;
 
     const scanStart = scanLineRange ? Math.max(0, scanLineRange.start) : 0;
-    const scanEnd = scanLineRange ? Math.min(lines.length - 1, scanLineRange.end) : lines.length - 1;
+    const scanEnd = scanLineRange ? Math.min(totalLines - 1, scanLineRange.end) : totalLines - 1;
+
+    let linesCache: string[] | null = null;
+    const getLine = (l: number): string => {
+      if (typeof document.lineAt === 'function') {
+        try {
+          return document.lineAt(l).text;
+        } catch {}
+      }
+      if (!linesCache) {
+        linesCache = document.getText().split(/\r?\n/);
+      }
+      return linesCache[l] || '';
+    };
 
     let currentClassName: string | null = null;
     let currentClassIndent = -1;
@@ -897,7 +925,7 @@ export class CallArgumentInspector implements vscode.Disposable {
     // When incrementally scanning a viewport range, scan backwards to detect enclosing class
     if (scanStart > 0) {
       for (let l = scanStart - 1; l >= 0; l--) {
-        const line = lines[l];
+        const line = getLine(l);
         const trimmed = line.trim();
         if (trimmed.startsWith('class ')) {
           const match = trimmed.match(/^class\s+([A-Za-z0-9_]+)/);
@@ -911,7 +939,7 @@ export class CallArgumentInspector implements vscode.Disposable {
     }
 
     for (let lineIdx = scanStart; lineIdx <= scanEnd; lineIdx++) {
-      const line = lines[lineIdx];
+      const line = getLine(lineIdx);
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith('#')) {
         continue;
@@ -956,7 +984,7 @@ export class CallArgumentInspector implements vscode.Disposable {
         }
 
         const openParenChar = match.index + match[0].lastIndexOf('(');
-        const callArgs = this.parseCallArguments(document, lineIdx, openParenChar);
+        const callArgs = this.parseCallArguments(document, lineIdx, openParenChar, getLine);
         if (!callArgs || callArgs.hasUnpack) {
           continue;
         }
