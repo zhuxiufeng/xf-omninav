@@ -4,9 +4,9 @@ import { SymbolIndexer } from '../indexer/symbolIndexer';
 import { getOmniConfig } from '../utils';
 
 /**
- * Rich hover card provider for Klipper components (lookup_object) and dynamic Python variables.
+ * Universal rich hover card provider for dynamically inferred Python / TypeScript objects and service references.
  */
-export class KlipperHoverProvider implements vscode.HoverProvider {
+export class DynamicTypeHoverProvider implements vscode.HoverProvider {
   constructor(private readonly indexer: SymbolIndexer) {}
 
   public provideHover(
@@ -14,7 +14,7 @@ export class KlipperHoverProvider implements vscode.HoverProvider {
     position: vscode.Position,
     _token: vscode.CancellationToken
   ): vscode.ProviderResult<vscode.Hover> {
-    if (document.languageId !== 'python') return undefined;
+    if (document.languageId !== 'python' && document.languageId !== 'typescript') return undefined;
     const isEnabled = getOmniConfig<boolean>('enableKlipperHover', true);
     if (!isEnabled) return undefined;
 
@@ -44,14 +44,14 @@ export class KlipperHoverProvider implements vscode.HoverProvider {
     md.isTrusted = true;
     md.supportHtml = true;
 
-    md.appendMarkdown(`### 🐍 **Klipper Component Reference**\n\n`);
+    md.appendMarkdown(`### 🔍 **Inferred Type & Class Reference**\n\n`);
     md.appendMarkdown(`- **Variable**: \`${word}\`\n`);
-    md.appendMarkdown(`- **Inferred Component**: \`${inferredType}\`\n`);
+    md.appendMarkdown(`- **Inferred Type / Class**: \`${inferredType}\`\n`);
 
     if (defs.length > 0) {
       const def = defs[0];
       const basename = def.uri.fsPath.split(/[/\\]/).pop() || def.uri.fsPath;
-      md.appendMarkdown(`- **Component Class**: \`${def.name}\`\n`);
+      md.appendMarkdown(`- **Defined Class**: \`${def.name}\`\n`);
       md.appendMarkdown(`- **Source**: [${basename}#L${def.range.start.line + 1}](${def.uri.toString()})\n`);
 
       // List key methods in class
@@ -67,9 +67,12 @@ export class KlipperHoverProvider implements vscode.HoverProvider {
         }
       }
     } else {
-      md.appendMarkdown(`- **Lookup**: Inferred via \`printer.lookup_object('${inferredType}')\`\n`);
+      md.appendMarkdown(`- **Source**: Inferred from dynamic instantiation or factory assignment\n`);
     }
 
     return new vscode.Hover(md, wordRange);
   }
 }
+
+// Backward-compatible alias
+export const KlipperHoverProvider = DynamicTypeHoverProvider;

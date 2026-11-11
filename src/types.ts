@@ -24,6 +24,8 @@ export interface SymbolDefinition {
   docstring?: string;
   fileRelativePath: string;
   isExported?: boolean;
+  isStatic?: boolean;
+  isClassMethod?: boolean;
 }
 
 /**
@@ -41,6 +43,8 @@ export class CompactSymbolDefinition implements SymbolDefinition {
   public readonly docstring?: string;
   public readonly fileRelativePath: string;
   public readonly isExported?: boolean;
+  public readonly isStatic?: boolean;
+  public readonly isClassMethod?: boolean;
 
   private readonly _r: [number, number, number, number];
   private readonly _sr: [number, number, number, number];
@@ -59,10 +63,14 @@ export class CompactSymbolDefinition implements SymbolDefinition {
     parentContainers?: string[];
     docstring?: string;
     isExported?: boolean;
+    isStatic?: boolean;
+    isClassMethod?: boolean;
   }) {
     this.name = options.name;
     this.kind = options.kind;
     this.uri = options.uri;
+    this.isStatic = options.isStatic;
+    this.isClassMethod = options.isClassMethod;
     this._r = Array.isArray(options.range)
       ? options.range
       : [

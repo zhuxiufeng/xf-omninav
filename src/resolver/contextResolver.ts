@@ -185,7 +185,40 @@ export class ContextResolver {
       };
     }
 
-    // 2.5 Check self.<property> or this.<property>: e.g. self.box_action.method()
+    // 2.5 Check multi-level dot chains: e.g. self.box_action.boxcfg.method() or client.service.method()
+    const chainMatch = prefix.match(/([A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+)\s*(?:->|\.)\s*$/);
+    if (chainMatch) {
+      const parts = chainMatch[1].split('.');
+      const first = parts[0];
+      const last = parts[parts.length - 1];
+
+      let currentType: string | undefined;
+      if (first === 'self' || first === 'this') {
+        currentType = this.inferSelfPropertyType(document, parts[1], position.line);
+        if (!currentType) {
+          currentType = this.snakeToPascal(parts[1]);
+        }
+        for (let pIdx = 2; pIdx < parts.length; pIdx++) {
+          currentType = this.snakeToPascal(parts[pIdx]);
+        }
+      } else {
+        currentType = this.inferVariableType(document, first, position.line) || this.snakeToPascal(first);
+        for (let pIdx = 1; pIdx < parts.length; pIdx++) {
+          currentType = this.snakeToPascal(parts[pIdx]);
+        }
+      }
+
+      return {
+        rawPrefix: prefix,
+        varName: last,
+        containerName: currentType,
+        isSelf: false,
+        isCls: false,
+        isSuper: false,
+      };
+    }
+
+    // 2.6 Check self.<property> or this.<property>: e.g. self.box_action.method()
     const selfPropMatch = prefix.match(/(?:self|this)\.([A-Za-z0-9_]+)\s*(?:->|\.)\s*$/);
     if (selfPropMatch) {
       const propName = selfPropMatch[1];
@@ -251,16 +284,16 @@ export class ContextResolver {
   ): string | undefined {
     const escaped = varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const patterns = [
-      // const x = new Dog(...) or x = Dog(...)
-      new RegExp(`(?:const|let|var\\s+)?${escaped}\\s*=\\s*(?:new\\s+)?([A-Z][A-Za-z0-9_]*)\\s*\\(`),
+      // const x = new Dog(...) or x = Dog(...) or x = module.Dog(...)
+      new RegExp(`(?:const|let|var\\s+)?${escaped}\\s*=\\s*(?:new\\s+)?(?:[A-Za-z0-9_]+\\.)?([A-Z][A-Za-z0-9_]*)\\s*\\(`),
       // x: Dog = ...
       new RegExp(`(?:const|let|var\\s+)?${escaped}\\s*:\\s*([A-Z][A-Za-z0-9_]*)\\b`),
       // def func(x: Dog):
       new RegExp(`(?:def|function)\\s+[A-Za-z0-9_]+\\s*\\(.*?[\\s,]${escaped}\\s*:\\s*([A-Z][A-Za-z0-9_]*)`),
       // (x as Dog)
       new RegExp(`\\(${escaped}\\s+as\\s+([A-Z][A-Za-z0-9_]*)\\)`),
-      // Klipper lookup_object: nozzle_manager = self.printer.lookup_object('nozzle_manager') or lookup_object("box")
-      new RegExp(`${escaped}\\s*=\\s*.*?lookup_object\\s*\\(\\s*['"]([A-Za-z0-9_]+)['"]`),
+      // Generic service locator / component factory: x = get_service('auth') or lookup_object('nozzle') or get_component('...')
+      new RegExp(`${escaped}\\s*=\\s*.*?(?:lookup_object|load_object|get_service|get_component|resolve|get_instance|get_client|create_client)\\s*\\(\\s*['"]([A-Za-z0-9_]+)['"]`),
     ];
 
     const minLine = Math.max(0, callLine - 60);

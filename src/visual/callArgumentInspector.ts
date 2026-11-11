@@ -210,6 +210,7 @@ export class CallArgumentInspector implements vscode.Disposable {
   private sigCache = new Map<string, FunctionSignatureInfo | null>();
   private lastDecorations = new Map<string, vscode.DecorationOptions[]>();
   private lastCalls = new Map<string, ParsedCallInfo[]>();
+  private fullAuditTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(private readonly indexer: SymbolIndexer) {
     this.diagnosticCollection =
@@ -235,8 +236,23 @@ export class CallArgumentInspector implements vscode.Disposable {
     });
 
     this.debouncedInspect = debounce((editor: vscode.TextEditor) => {
-      this.inspectDocument(editor.document);
-    }, 250);
+      if (!editor || !editor.document) return;
+      if (
+        editor.document.lineCount > 1500 &&
+        editor.visibleRanges &&
+        editor.visibleRanges.length > 0
+      ) {
+        const first = editor.visibleRanges[0].start.line;
+        const last = editor.visibleRanges[editor.visibleRanges.length - 1].end.line;
+        const scanRange = {
+          start: Math.max(0, first - 80),
+          end: Math.min(editor.document.lineCount - 1, last + 80),
+        };
+        this.inspectDocument(editor.document, scanRange);
+      } else {
+        this.inspectDocument(editor.document);
+      }
+    }, 200);
 
     if (vscode.window.onDidChangeVisibleTextEditors) {
       this.disposables.push(
@@ -256,10 +272,11 @@ export class CallArgumentInspector implements vscode.Disposable {
    */
   public parsePythonSignature(
     signature: string,
-    isMethod = false
+    isMethod = false,
+    isStatic = false
   ): FunctionSignatureInfo | null {
     if (!signature) return null;
-    const cacheKey = `${isMethod ? 'm:' : 'f:'}${signature}`;
+    const cacheKey = `${isStatic ? 's:' : isMethod ? 'm:' : 'f:'}${signature}`;
     if (this.sigCache.has(cacheKey)) {
       return this.sigCache.get(cacheKey) || null;
     }
@@ -341,8 +358,8 @@ export class CallArgumentInspector implements vscode.Disposable {
       }
     }
 
-    // Strip implicit 'self' or 'cls' receiver
-    if (positionalParams.length > 0) {
+    // Strip implicit 'self' or 'cls' receiver (unless method is static)
+    if (!isStatic && positionalParams.length > 0) {
       const first = positionalParams[0].name;
       if (first === 'self' || first === 'cls') {
         positionalParams.shift();
@@ -597,8 +614,12 @@ export class CallArgumentInspector implements vscode.Disposable {
 
   /**
    * Inspect a Python document and generate diagnostics for call argument mismatches.
+   * Supports incremental scanning via scanLineRange for 10,000+ line large files.
    */
-  public inspectDocument(document: vscode.TextDocument): vscode.Diagnostic[] {
+  public inspectDocument(
+    document: vscode.TextDocument,
+    scanLineRange?: { start: number; end: number }
+  ): vscode.Diagnostic[] {
     if (document.languageId !== 'python') {
       return [];
     }
@@ -628,10 +649,29 @@ export class CallArgumentInspector implements vscode.Disposable {
     const text = document.getText();
     const lines = text.split(/\r?\n/);
 
+    const scanStart = scanLineRange ? Math.max(0, scanLineRange.start) : 0;
+    const scanEnd = scanLineRange ? Math.min(lines.length - 1, scanLineRange.end) : lines.length - 1;
+
     let currentClassName: string | null = null;
     let currentClassIndent = -1;
 
-    for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+    // When incrementally scanning a viewport range, scan backwards to detect enclosing class
+    if (scanStart > 0) {
+      for (let l = scanStart - 1; l >= 0; l--) {
+        const line = lines[l];
+        const trimmed = line.trim();
+        if (trimmed.startsWith('class ')) {
+          const match = trimmed.match(/^class\s+([A-Za-z0-9_]+)/);
+          if (match) {
+            currentClassName = match[1];
+            currentClassIndent = line.length - line.trimStart().length;
+            break;
+          }
+        }
+      }
+    }
+
+    for (let lineIdx = scanStart; lineIdx <= scanEnd; lineIdx++) {
       const line = lines[lineIdx];
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith('#')) {
@@ -752,7 +792,7 @@ export class CallArgumentInspector implements vscode.Disposable {
         const sigInfos: FunctionSignatureInfo[] = [];
         for (const def of candidateDefs) {
           const isMethod = def.kind === 'method' || Boolean(def.containerName);
-          const sigInfo = this.parsePythonSignature(def.signature, isMethod);
+          const sigInfo = this.parsePythonSignature(def.signature, isMethod, Boolean(def.isStatic));
           if (sigInfo) {
             sigInfos.push(sigInfo);
           }
@@ -942,11 +982,38 @@ export class CallArgumentInspector implements vscode.Disposable {
       }
     }
 
-    this.lastCalls.set(document.uri.toString(), parsedCalls);
-    this.diagnosticCollection.set(document.uri, diagnostics);
-    this.lastDecorations.set(document.uri.toString(), decorations);
-    this.applyDecorationsToDocument(document.uri, decorations);
-    return diagnostics;
+    if (scanLineRange) {
+      const prevCalls = this.lastCalls.get(document.uri.toString()) || [];
+      const prevDiags = this.diagnosticCollection.get(document.uri) || [];
+      const prevDecors = this.lastDecorations.get(document.uri.toString()) || [];
+
+      const isInsideScanRange = (l: number) => l >= scanStart && l <= scanEnd;
+
+      const mergedCalls = [
+        ...prevCalls.filter((c) => !isInsideScanRange(c.targetRange.start.line)),
+        ...parsedCalls,
+      ];
+      const mergedDiags = [
+        ...prevDiags.filter((d) => !isInsideScanRange(d.range.start.line)),
+        ...diagnostics,
+      ];
+      const mergedDecors = [
+        ...prevDecors.filter((d) => !isInsideScanRange(d.range.start.line)),
+        ...decorations,
+      ];
+
+      this.lastCalls.set(document.uri.toString(), mergedCalls);
+      this.diagnosticCollection.set(document.uri, mergedDiags);
+      this.lastDecorations.set(document.uri.toString(), mergedDecors);
+      this.applyDecorationsToDocument(document.uri, mergedDecors);
+      return mergedDiags;
+    } else {
+      this.lastCalls.set(document.uri.toString(), parsedCalls);
+      this.diagnosticCollection.set(document.uri, diagnostics);
+      this.lastDecorations.set(document.uri.toString(), decorations);
+      this.applyDecorationsToDocument(document.uri, decorations);
+      return diagnostics;
+    }
   }
 
   public getCallsForDocument(uri: vscode.Uri): ParsedCallInfo[] {
@@ -1044,6 +1111,20 @@ export class CallArgumentInspector implements vscode.Disposable {
   public triggerInspect(editor: vscode.TextEditor): void {
     if (editor.document.languageId === 'python') {
       this.debouncedInspect(editor);
+
+      // For large files (>1500 lines), schedule full audit when user pauses typing
+      if (editor.document.lineCount > 1500) {
+        const uriStr = editor.document.uri.toString();
+        const existingTimer = this.fullAuditTimers.get(uriStr);
+        if (existingTimer) {
+          clearTimeout(existingTimer);
+        }
+        const timer = setTimeout(() => {
+          this.fullAuditTimers.delete(uriStr);
+          this.inspectDocument(editor.document);
+        }, 1200);
+        this.fullAuditTimers.set(uriStr, timer);
+      }
     }
   }
 
@@ -1074,6 +1155,10 @@ export class CallArgumentInspector implements vscode.Disposable {
 
   dispose(): void {
     this.debouncedInspect.cancel();
+    for (const t of this.fullAuditTimers.values()) {
+      clearTimeout(t);
+    }
+    this.fullAuditTimers.clear();
     this.clearAll();
     for (const d of this.disposables) {
       d.dispose();

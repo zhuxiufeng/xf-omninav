@@ -23,8 +23,12 @@ import { MermaidHierarchyExporter } from './visual/mermaidExporter';
 import { PyCharmFileErrorDecorator } from './visual/fileErrorDecorator';
 import { CallArgumentInspector } from './visual/callArgumentInspector';
 import { PythonParamInlayHintsProvider } from './visual/pythonParamInlayHints';
-import { CallArgumentCodeActionProvider } from './visual/callArgumentCodeActions';
+import {
+  CallArgumentCodeActionProvider,
+  addParameterToMethodDefinition,
+} from './visual/callArgumentCodeActions';
 import { KlipperHoverProvider } from './navigation/klipperHoverProvider';
+import { OmniStatusBar } from './statusBar/omniStatusBar';
 
 export function activate(context: vscode.ExtensionContext) {
   const outputChannel = vscode.window.createOutputChannel('XF OmniNav');
@@ -57,6 +61,10 @@ export function activate(context: vscode.ExtensionContext) {
   // PyCharm-style call argument inspector (checks parameter counts without type annotations)
   const callArgumentInspector = new CallArgumentInspector(indexer);
   context.subscriptions.push(callArgumentInspector);
+
+  // Universal OmniNav status bar widget
+  const omniStatusBar = new OmniStatusBar(indexer);
+  context.subscriptions.push(omniStatusBar);
 
   const codeLensProvider = new InheritanceCodeLensProvider();
   const inlayHintsProvider = new InheritanceInlayHintsProvider();
@@ -126,7 +134,10 @@ export function activate(context: vscode.ExtensionContext) {
     const klipperHoverProvider = new KlipperHoverProvider(indexer);
     if (typeof vscode.languages.registerHoverProvider === 'function') {
       context.subscriptions.push(
-        vscode.languages.registerHoverProvider({ language: 'python' }, klipperHoverProvider)
+        vscode.languages.registerHoverProvider(
+          [{ language: 'python' }, { language: 'typescript' }],
+          klipperHoverProvider
+        )
       );
     }
   } catch (err) {
@@ -336,6 +347,26 @@ export function activate(context: vscode.ExtensionContext) {
       }
       vscode.window.showInformationMessage(`XF OmniNav: 参数检查提示级别已切换为: ${pick.label}`);
     }
+  });
+
+  registerMulti('showStatusBarMenu', async () => {
+    await omniStatusBar.showMenu();
+  });
+
+  registerMulti('inspectCallArguments', () => {
+    const editor = vscode.window.activeTextEditor;
+    if (editor) {
+      callArgumentInspector.inspectDocument(editor.document);
+      vscode.window.showInformationMessage('XF OmniNav: 当前文件函数调用检查完毕');
+    }
+  });
+
+  registerMulti('exportMermaidHierarchy', async (className?: string) => {
+    await MermaidHierarchyExporter.exportClassHierarchy(indexer, className);
+  });
+
+  registerMulti('addParameterToMethod', async (args: any) => {
+    await addParameterToMethodDefinition(args);
   });
 
   // Inheritance Commands

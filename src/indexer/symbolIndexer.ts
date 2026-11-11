@@ -118,6 +118,10 @@ export class SymbolIndexer implements vscode.Disposable {
     return this.fileMap.size;
   }
 
+  public get indexing(): boolean {
+    return this.isIndexing;
+  }
+
   /**
    * Run full workspace index scan with parallel batched I/O.
    */

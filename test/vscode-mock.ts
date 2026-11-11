@@ -83,6 +83,12 @@ export enum OverviewRulerLane {
   Full = 7,
 }
 
+export enum ConfigurationTarget {
+  Global = 1,
+  Workspace = 2,
+  WorkspaceFolder = 3,
+}
+
 export enum DiagnosticSeverity {
   Error = 0,
   Warning = 1,

@@ -227,8 +227,22 @@ export class SymbolParser {
           const startCol = prefix.length;
           const endCol = startCol + funcName.length;
 
-          const isProperty =
-            i > 0 && lines[i - 1].trim().startsWith('@property');
+          // Scan preceding decorators
+          let isStatic = false;
+          let isClassMethod = false;
+          let isProperty = false;
+
+          for (let d = i - 1; d >= Math.max(0, i - 10); d--) {
+            const decLine = lines[d].trim();
+            if (!decLine || decLine.startsWith('#')) continue;
+            if (decLine.startsWith('@')) {
+              if (decLine.startsWith('@staticmethod')) isStatic = true;
+              else if (decLine.startsWith('@classmethod')) isClassMethod = true;
+              else if (decLine.startsWith('@property')) isProperty = true;
+            } else {
+              break;
+            }
+          }
 
           const kind: SymbolKind = isProperty
             ? 'property'
@@ -259,6 +273,8 @@ export class SymbolParser {
             docstring: this.extractDocstring(lines, sigEndLine + 1),
             fileRelativePath: relativePath,
             isExported: !funcName.startsWith('_'),
+            isStatic,
+            isClassMethod,
           }));
           continue;
         }
@@ -452,6 +468,7 @@ export class SymbolParser {
           methodMatch[1] !== 'while'
         ) {
           const name = methodMatch[1];
+          const isStatic = /\bstatic\b/.test(line);
           const startCol = line.indexOf(name);
           definitions.push(new CompactSymbolDefinition({
             name,
@@ -463,6 +480,7 @@ export class SymbolParser {
             signature: trimmed.replace(/\{$/, '').trim(),
             fileRelativePath: relativePath,
             isExported: true,
+            isStatic,
           }));
         }
       }

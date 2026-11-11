@@ -59,22 +59,43 @@ export class CallArgumentCodeActionProvider implements vscode.CodeActionProvider
             actions.push(action);
           }
 
-          // Offer action to inspect or jump to definition to add parameter
-          const exactDefs = this.indexer.findExact(matchingCall.methodName);
-          if (exactDefs.length > 0) {
-            const targetDef = exactDefs[0];
-            const action = new vscode.CodeAction(
-              `XF OmniNav: 跳转至 '${matchingCall.methodName}' 定义处追加形参`,
-              vscode.CodeActionKind.QuickFix
-            );
-            action.diagnostics = [diag];
-            action.command = {
-              title: 'Go to Definition',
-              command: 'xfOmniNav.jumpToLocation',
-              arguments: [targetDef],
-            };
-            actions.push(action);
-          }
+            // Offer action to inspect or jump to definition to add parameter
+            const exactDefs = this.indexer.findExact(matchingCall.methodName);
+            if (exactDefs.length > 0) {
+              const targetDef = exactDefs[0];
+              const firstExcess = excessItems[0].text.replace(/[^A-Za-z0-9_]/g, '') || 'arg';
+              const addParamAction = new vscode.CodeAction(
+                `XF OmniNav: 在方法 '${matchingCall.methodName}' 中添加形参 '${firstExcess}'`,
+                vscode.CodeActionKind.QuickFix
+              );
+              addParamAction.diagnostics = [diag];
+              addParamAction.command = {
+                title: 'Add Parameter to Method Definition',
+                command: 'xfOmniNav.addParameterToMethod',
+                arguments: [
+                  {
+                    targetUri: targetDef.uri.toString(),
+                    methodName: matchingCall.methodName,
+                    paramName: firstExcess,
+                    isKeyword: false,
+                    line: targetDef.range.start.line,
+                  },
+                ],
+              };
+              actions.push(addParamAction);
+
+              const jumpAction = new vscode.CodeAction(
+                `XF OmniNav: 跳转至 '${matchingCall.methodName}' 定义处追加形参`,
+                vscode.CodeActionKind.QuickFix
+              );
+              jumpAction.diagnostics = [diag];
+              jumpAction.command = {
+                title: 'Go to Definition',
+                command: 'xfOmniNav.jumpToLocation',
+                arguments: [targetDef],
+              };
+              actions.push(jumpAction);
+            }
         }
       } else if (diag.code === 'missing-arguments') {
         if (matchingCall) {
@@ -133,6 +154,31 @@ export class CallArgumentCodeActionProvider implements vscode.CodeActionProvider
                 }
               }
             }
+
+            // PyCharm-style 1-click QuickFix: Add parameter to target method definition
+            const exactDefs = this.indexer.findExact(matchingCall.methodName);
+            if (exactDefs.length > 0 && unexpectedItem.keywordName) {
+              const targetDef = exactDefs[0];
+              const addParamAction = new vscode.CodeAction(
+                `XF OmniNav: 在方法 '${matchingCall.methodName}' 中添加形参 '${unexpectedItem.keywordName}=None'`,
+                vscode.CodeActionKind.QuickFix
+              );
+              addParamAction.diagnostics = [diag];
+              addParamAction.command = {
+                title: 'Add Parameter to Method Definition',
+                command: 'xfOmniNav.addParameterToMethod',
+                arguments: [
+                  {
+                    targetUri: targetDef.uri.toString(),
+                    methodName: matchingCall.methodName,
+                    paramName: unexpectedItem.keywordName,
+                    isKeyword: true,
+                    line: targetDef.range.start.line,
+                  },
+                ],
+              };
+              actions.push(addParamAction);
+            }
           }
         }
       }
@@ -162,3 +208,102 @@ function levenshteinDistance(a: string, b: string): number {
   }
   return dp[a.length][b.length];
 }
+
+/**
+ * Universal PyCharm-style command to automatically insert a missing parameter
+ * into a Python / TS method or function definition.
+ */
+export async function addParameterToMethodDefinition(args: {
+  targetUri: string;
+  methodName: string;
+  paramName?: string;
+  isKeyword?: boolean;
+  line?: number;
+}): Promise<void> {
+  if (!args || !args.targetUri || !args.paramName) return;
+  try {
+    const uri = vscode.Uri.parse(args.targetUri);
+    const doc = await vscode.workspace.openTextDocument(uri);
+    const editor = await vscode.window.showTextDocument(doc);
+
+    const startLine = Math.max(0, (args.line || 0) - 5);
+    const endLine = Math.min(doc.lineCount - 1, (args.line || 0) + 20);
+
+    let defLine = -1;
+    const defRegex = new RegExp(`(?:def|async\\s+def|function)\\s+${args.methodName}\\s*\\(`);
+    for (let l = startLine; l <= endLine; l++) {
+      if (defRegex.test(doc.lineAt(l).text)) {
+        defLine = l;
+        break;
+      }
+    }
+
+    if (defLine === -1) {
+      for (let l = 0; l < doc.lineCount; l++) {
+        if (defRegex.test(doc.lineAt(l).text)) {
+          defLine = l;
+          break;
+        }
+      }
+    }
+
+    if (defLine === -1) {
+      vscode.window.showWarningMessage(
+        `XF OmniNav: 未能定位方法 '${args.methodName}' 的声明行`
+      );
+      return;
+    }
+
+    // Locate closing parenthesis ')' of parameter list
+    let parenDepth = 0;
+    let foundClosePos: vscode.Position | null = null;
+    let hasExistingParams = false;
+
+    for (let l = defLine; l < Math.min(doc.lineCount, defLine + 35); l++) {
+      const lineText = doc.lineAt(l).text;
+      for (let c = 0; c < lineText.length; c++) {
+        const ch = lineText[c];
+        if (ch === '(') {
+          parenDepth++;
+        } else if (ch === ')') {
+          parenDepth--;
+          if (parenDepth === 0) {
+            foundClosePos = new vscode.Position(l, c);
+            break;
+          }
+        } else if (parenDepth > 0 && !/\s/.test(ch)) {
+          hasExistingParams = true;
+        }
+      }
+      if (foundClosePos) break;
+    }
+
+    if (!foundClosePos) {
+      vscode.window.showWarningMessage(
+        `XF OmniNav: 未能找到方法 '${args.methodName}' 参数列表闭合括号 ')'`
+      );
+      return;
+    }
+
+    const insertText = args.isKeyword
+      ? (hasExistingParams ? `, ${args.paramName}=None` : `${args.paramName}=None`)
+      : (hasExistingParams ? `, ${args.paramName}` : args.paramName);
+
+    const edit = new vscode.WorkspaceEdit();
+    edit.insert(uri, foundClosePos, insertText);
+    const applied = await vscode.workspace.applyEdit(edit);
+
+    if (applied) {
+      editor.revealRange(
+        new vscode.Range(foundClosePos, foundClosePos),
+        vscode.TextEditorRevealType.InCenter
+      );
+      vscode.window.showInformationMessage(
+        `XF OmniNav: 已在 '${args.methodName}' 中添加形参 '${args.paramName}'`
+      );
+    }
+  } catch (err) {
+    vscode.window.showErrorMessage(`XF OmniNav 添加形参失败: ${String(err)}`);
+  }
+}
+

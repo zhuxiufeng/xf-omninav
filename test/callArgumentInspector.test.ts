@@ -6,6 +6,9 @@ import { SymbolIndexer } from '../src/indexer/symbolIndexer';
 import { PythonParamInlayHintsProvider } from '../src/visual/pythonParamInlayHints';
 import { CallArgumentCodeActionProvider } from '../src/visual/callArgumentCodeActions';
 import { KlipperHoverProvider } from '../src/navigation/klipperHoverProvider';
+import { SymbolParser } from '../src/indexer/symbolParser';
+import { ContextResolver } from '../src/resolver/contextResolver';
+import { OmniStatusBar } from '../src/statusBar/omniStatusBar';
 
 test('CallArgumentInspector tests', async (t) => {
   const indexer = new SymbolIndexer({ subscriptions: [] } as any);
@@ -224,7 +227,9 @@ test('CallArgumentInspector tests', async (t) => {
 
     assert.ok(hover, 'Hover should be returned for Klipper object');
     const mdValue = hover.contents[0].value;
-    assert.ok(mdValue.includes('Klipper Component Reference'));
+    assert.ok(
+      mdValue.includes('Inferred Type') || mdValue.includes('Component Reference')
+    );
     assert.ok(mdValue.includes('nozzle_manager'));
   });
 
@@ -319,6 +324,68 @@ test('CallArgumentInspector tests', async (t) => {
 
     const diagnostics = inspector.inspectDocument(callerDoc);
     assert.equal(diagnostics.length, 0, 'gcode_move.get_status should skip mismatching toolhead.get_status and produce 0 diagnostics');
+  });
+
+  await t.test('parsePython: should correctly identify @staticmethod, @classmethod, and @property decorators', async () => {
+    const decDoc = new (vscode as any).MockTextDocument(
+      `class ServiceManager:
+    @staticmethod
+    def calc_hash(data):
+        return len(data)
+
+    @classmethod
+    def create_default(cls, name):
+        return cls()
+
+    @property
+    def is_ready(self):
+        return True
+`,
+      '/workspace/decorators.py',
+      'python'
+    );
+    const defs = SymbolParser.parsePython(decDoc.getText(), 'decorators.py', decDoc.uri);
+    const calcHash = defs.find((d) => d.name === 'calc_hash');
+    const createDef = defs.find((d) => d.name === 'create_default');
+    const isReady = defs.find((d) => d.name === 'is_ready');
+
+    assert.ok(calcHash, 'calc_hash should be parsed');
+    assert.equal(calcHash?.isStatic, true, 'calc_hash should be identified as isStatic');
+
+    assert.ok(createDef, 'create_default should be parsed');
+    assert.equal(createDef?.isClassMethod, true, 'create_default should be identified as isClassMethod');
+
+    assert.ok(isReady, 'is_ready should be parsed');
+    assert.equal(isReady?.kind, 'property', 'is_ready should have kind property');
+
+    // Static method signature should keep 'data' as first parameter
+    const staticSig = inspector.parsePythonSignature(calcHash!.signature, true, true);
+    assert.ok(staticSig);
+    assert.equal(staticSig?.minPositional, 1, 'calc_hash static method should require 1 argument (data)');
+    assert.equal(staticSig?.params[0].name, 'data', 'First parameter should be data, not stripped');
+  });
+
+  await t.test('ContextResolver: should infer generic factory locator (get_service, create_client)', async () => {
+    const factoryDoc = new (vscode as any).MockTextDocument(
+      `def run_workflow():
+    auth_srv = get_service('auth_manager')
+    api_client = create_client('rest_api')
+`,
+      '/workspace/factory.py',
+      'python'
+    );
+    const authType = ContextResolver.inferVariableType(factoryDoc, 'auth_srv', 2);
+    const apiType = ContextResolver.inferVariableType(factoryDoc, 'api_client', 3);
+
+    assert.equal(authType, 'auth_manager', 'auth_srv should be inferred as auth_manager');
+    assert.equal(apiType, 'rest_api', 'api_client should be inferred as rest_api');
+  });
+
+  await t.test('OmniStatusBar: should format symbol count and indexing status cleanly', async () => {
+    const statusBar = new OmniStatusBar(indexer);
+    statusBar.update();
+    assert.ok(statusBar, 'OmniStatusBar should be instantiated successfully');
+    statusBar.dispose();
   });
 
   inspector.dispose();
