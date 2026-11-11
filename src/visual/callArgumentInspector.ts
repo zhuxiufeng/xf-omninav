@@ -197,13 +197,6 @@ export const DEFAULT_CONFIGURED_POLYMORPHIC_METHODS: string[] = [
   'handle_connect',
   'handle_ready',
   'handle_shutdown',
-  'respond_info',
-  'respond_raw',
-  'register_command',
-  'lookup_object',
-  'raw_command',
-  'run_script',
-  'run_script_from_command',
 ];
 
 /**
@@ -1023,11 +1016,19 @@ export class CallArgumentInspector implements vscode.Disposable {
         } else if (receiver && receiver !== 'self' && receiver !== 'cls') {
           // If receiver is a variable or self property, check if it was inferred to a specific class
           const rawProp = receiver.replace(/^(?:self|this)\./, '');
-          const isGeneric = GENERIC_VARIABLE_NAMES.has(receiver) || GENERIC_VARIABLE_NAMES.has(rawProp);
+          const receiverParts = receiver.split('.');
+          const terminalProp = receiverParts[receiverParts.length - 1];
+          const isGeneric =
+            GENERIC_VARIABLE_NAMES.has(receiver) ||
+            GENERIC_VARIABLE_NAMES.has(rawProp) ||
+            GENERIC_VARIABLE_NAMES.has(terminalProp);
 
           let inferredType = ContextResolver.inferVariableType(document, receiver, lineIdx, this.indexer);
           if (!inferredType && receiver.includes('.')) {
             inferredType = ContextResolver.inferSelfPropertyType(document, rawProp, lineIdx);
+          }
+          if (!inferredType && terminalProp !== rawProp) {
+            inferredType = ContextResolver.inferSelfPropertyType(document, terminalProp, lineIdx);
           }
           if (!inferredType) {
             inferredType = ContextResolver.inferSelfPropertyType(document, rawProp, lineIdx);
@@ -1036,11 +1037,17 @@ export class CallArgumentInspector implements vscode.Disposable {
           // Component name match fallback: e.g. gcode, toolhead, printer
           if (!inferredType && !isGeneric) {
             const cleanRaw = rawProp.replace(/_/g, '').toLowerCase();
-            const componentMatch = candidateDefs.filter(
-              (d) =>
-                d.containerName?.replace(/_/g, '').toLowerCase() === cleanRaw ||
-                d.uri.fsPath.replace(/_/g, '').toLowerCase().includes(cleanRaw)
-            );
+            const cleanTerminal = terminalProp.replace(/_/g, '').toLowerCase();
+            const componentMatch = candidateDefs.filter((d) => {
+              const cont = d.containerName?.replace(/_/g, '').toLowerCase();
+              const pth = d.uri.fsPath.replace(/_/g, '').toLowerCase();
+              return (
+                cont === cleanRaw ||
+                cont === cleanTerminal ||
+                pth.includes(cleanRaw) ||
+                pth.includes(cleanTerminal)
+              );
+            });
             if (componentMatch.length > 0) {
               candidateDefs = componentMatch;
               hasComponentMatch = true;

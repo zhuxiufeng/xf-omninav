@@ -758,6 +758,39 @@ class Worker {
     assert.equal(inferred, 'Dog', 'Should skip None and infer Dog');
   });
 
+  await t.test('Screenshot Reproduction: gcode.printer.lookup_object should detect excess positional arguments (3, 1)', async () => {
+    // 1. Index Printer.lookup_object in klippy.py
+    const klippyDoc = new (vscode as any).MockTextDocument(
+      `class Printer:
+    def lookup_object(self, name, default=None):
+        pass
+`,
+      '/workspace/klippy/klippy.py',
+      'python'
+    );
+    await indexer.indexDocument(klippyDoc);
+
+    // 2. Caller uses chained receiver: gcode.printer.lookup_object("virtual_sdcard", None, 3, 1)
+    const callerDoc = new (vscode as any).MockTextDocument(
+      `class VirtualSdCardWrapper:
+    def check_sd(self, gcode):
+        cur = greenlet.getcurrent()
+        v_sd = gcode.printer.lookup_object("virtual_sdcard", None, 3, 1)
+`,
+      '/workspace/klippy/extras/virtual_sdcard_wrapper.py',
+      'python'
+    );
+    await indexer.indexDocument(callerDoc);
+
+    const diags = inspector.inspectDocument(callerDoc);
+    assert.ok(diags.length > 0, 'Should detect error for excess arguments on gcode.printer.lookup_object');
+    const tooManyDiag = diags.find((d) => d.code === 'too-many-arguments');
+    assert.ok(tooManyDiag, 'Should flag too-many-arguments diagnostic');
+    assert.ok(tooManyDiag.message.includes('lookup_object'));
+    assert.ok(tooManyDiag.message.includes('最多接收 2 个位置参数'));
+    assert.ok(tooManyDiag.message.includes('实际传入了 4 个'));
+  });
+
   await t.test('OmniStatusBar: should format symbol count and indexing status cleanly', async () => {
     const statusBar = new OmniStatusBar(indexer);
     statusBar.update();
