@@ -228,6 +228,40 @@ test('CallArgumentInspector tests', async (t) => {
     assert.ok(mdValue.includes('nozzle_manager'));
   });
 
+  await t.test('inspectDocument: should skip common polymorphic methods (e.g. config.get, d.update) to prevent false positives', async () => {
+    // Index a custom def get(self, gcmd) from pa_tester.py
+    const paTesterDoc = new (vscode as any).MockTextDocument(
+      `class PaTester:
+    def get(self, gcmd):
+        pass
+`,
+      '/workspace/pa_tester.py',
+      'python'
+    );
+    await indexer.indexDocument(paTesterDoc);
+
+    // Call config.get('xy_calib_buttons_pins', default=None) in nozzle_manager_wrapper.py
+    const configCallerDoc = new (vscode as any).MockTextDocument(
+      `def init(self, config):
+    raw_pins = config.get('xy_calib_buttons_pins', default=None)
+    val = d.get('key', 0)
+    d.update({'a': 1})
+`,
+      '/workspace/nozzle_manager_wrapper.py',
+      'python'
+    );
+
+    const diagnostics = inspector.inspectDocument(configCallerDoc);
+    assert.equal(diagnostics.length, 0, 'Polymorphic methods like config.get should not trigger false positives');
+  });
+
+  await t.test('parsePythonSignature: should never count self or cls as missing argument', () => {
+    // Method signature where isMethod wasn't provided or stripped
+    const sig = inspector.parsePythonSignature('def stop_temp_stats_timer(self):', false);
+    assert.ok(sig);
+    assert.equal(sig.minPositional, 0, 'self should be stripped from positional bounds even if isMethod=false');
+  });
+
   inspector.dispose();
   indexer.dispose();
 });

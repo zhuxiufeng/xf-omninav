@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { SymbolIndexer } from '../indexer/symbolIndexer';
 import { SymbolDefinition } from '../types';
 import { getOmniConfig, debounce, ICON_DATA_URIS } from '../utils';
+import { ContextResolver } from '../resolver/contextResolver';
 
 export interface ParamSpec {
   name: string;
@@ -96,6 +97,83 @@ const PYTHON_BUILTINS = new Set([
   'dir',
   'locals',
   'globals',
+]);
+
+export const COMMON_POLYMORPHIC_METHODS = new Set([
+  'get',
+  'set',
+  'update',
+  'pop',
+  'append',
+  'extend',
+  'insert',
+  'remove',
+  'clear',
+  'copy',
+  'count',
+  'index',
+  'keys',
+  'values',
+  'items',
+  'join',
+  'split',
+  'replace',
+  'strip',
+  'lstrip',
+  'rstrip',
+  'format',
+  'run',
+  'start',
+  'stop',
+  'reset',
+  'wait',
+  'close',
+  'read',
+  'readline',
+  'readlines',
+  'write',
+  'writelines',
+  'flush',
+  'seek',
+  'tell',
+  'info',
+  'warning',
+  'error',
+  'debug',
+  'critical',
+  'exception',
+  'log',
+  'median',
+  'mean',
+  'std',
+  'min',
+  'max',
+  'sum',
+  'abs',
+  'round',
+  'dump',
+  'dumps',
+  'load',
+  'loads',
+  'sleep',
+  'time',
+  'check',
+  'init',
+  'save',
+  'process',
+  'handler',
+  'callback',
+  'send',
+  'recv',
+  'add',
+  'discard',
+  'encode',
+  'decode',
+  'find',
+  'startswith',
+  'endswith',
+  'lower',
+  'upper',
 ]);
 
 /**
@@ -242,8 +320,8 @@ export class CallArgumentInspector implements vscode.Disposable {
       }
     }
 
-    // If method, strip implicit 'self' or 'cls' receiver
-    if (isMethod && positionalParams.length > 0) {
+    // Strip implicit 'self' or 'cls' receiver
+    if (positionalParams.length > 0) {
       const first = positionalParams[0].name;
       if (first === 'self' || first === 'cls') {
         positionalParams.shift();
@@ -570,6 +648,13 @@ export class CallArgumentInspector implements vscode.Disposable {
           continue;
         }
 
+        // Skip common polymorphic/built-in methods unless receiver is 'self'/'cls'
+        if (COMMON_POLYMORPHIC_METHODS.has(methodName)) {
+          if (receiver !== 'self' && receiver !== 'cls') {
+            continue;
+          }
+        }
+
         const openParenChar = match.index + match[0].lastIndexOf('(');
         const callArgs = this.parseCallArguments(document, lineIdx, openParenChar);
         if (!callArgs || callArgs.hasUnpack) {
@@ -593,6 +678,24 @@ export class CallArgumentInspector implements vscode.Disposable {
           );
           if (classSpecific.length > 0) {
             candidateDefs = classSpecific;
+          } else if (COMMON_POLYMORPHIC_METHODS.has(methodName)) {
+            continue;
+          }
+        } else if (receiver && receiver !== 'self' && receiver !== 'cls') {
+          // If receiver is a variable, check if it was inferred to a specific class (e.g. lookup_object)
+          const inferredType = ContextResolver.inferVariableType(document, receiver, lineIdx);
+          if (inferredType) {
+            const pascalName = inferredType[0].toUpperCase() + inferredType.slice(1);
+            const matchingDefs = candidateDefs.filter(
+              (d) =>
+                d.containerName === inferredType ||
+                d.containerName === pascalName ||
+                d.containerName === `${pascalName}Action` ||
+                d.uri.fsPath.includes(inferredType)
+            );
+            if (matchingDefs.length > 0) {
+              candidateDefs = matchingDefs;
+            }
           }
         }
 
@@ -687,6 +790,7 @@ export class CallArgumentInspector implements vscode.Disposable {
             for (let pIdx = 0; pIdx < s.minPositional; pIdx++) {
               const p = s.params[pIdx];
               if (!p || p.hasDefault || p.isVararg || p.isVarkwarg || p.isKeywordOnly) continue;
+              if (p.name === 'self' || p.name === 'cls') continue;
               if (pIdx < callArgs.positionalCount) continue;
               if (callArgs.keywords.includes(p.name)) continue;
               missingForThisSig.push(p.name);
