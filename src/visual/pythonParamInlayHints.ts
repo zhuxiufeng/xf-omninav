@@ -41,9 +41,13 @@ export class PythonParamInlayHintsProvider implements vscode.InlayHintsProvider 
 
       const sig = call.sigInfos[0];
       const positionalItems = call.callArgs.items.filter((it) => !it.isKeyword);
+      const hasExplicitSelf =
+        positionalItems.length > 0 &&
+        (positionalItems[0].text === 'self' || positionalItems[0].text === 'cls');
+      const itemsToMatch = hasExplicitSelf ? positionalItems.slice(1) : positionalItems;
 
-      for (let i = 0; i < positionalItems.length; i++) {
-        const item = positionalItems[i];
+      for (let i = 0; i < itemsToMatch.length; i++) {
+        const item = itemsToMatch[i];
         if (i < sig.params.length) {
           const param = sig.params[i];
           if (param && param.name && !param.isVararg && !param.isVarkwarg) {

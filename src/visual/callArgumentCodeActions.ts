@@ -37,9 +37,12 @@ export class CallArgumentCodeActionProvider implements vscode.CodeActionProvider
       if (diag.code === 'too-many-arguments') {
         if (matchingCall && matchingCall.sigInfos.length > 0) {
           const maxAllowed = Math.max(...matchingCall.sigInfos.map((s) => s.maxPositional));
-          const excessItems = matchingCall.callArgs.items
-            .filter((it) => !it.isKeyword)
-            .slice(maxAllowed);
+          const positionalItems = matchingCall.callArgs.items.filter((it) => !it.isKeyword);
+          const hasExplicitSelf =
+            positionalItems.length > 0 &&
+            (positionalItems[0].text === 'self' || positionalItems[0].text === 'cls');
+          const excessSliceStart = hasExplicitSelf ? maxAllowed + 1 : maxAllowed;
+          const excessItems = positionalItems.slice(excessSliceStart);
 
           if (excessItems.length > 0) {
             const action = new vscode.CodeAction(

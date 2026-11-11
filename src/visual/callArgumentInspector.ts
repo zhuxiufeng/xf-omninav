@@ -735,6 +735,19 @@ export class CallArgumentInspector implements vscode.Disposable {
           }
         }
 
+        // If receiver is a Class name (e.g. BoxActionBase.communication_set_pre_loading),
+        // prioritize definitions belonging to that container class
+        if (receiver && /^[A-Z]/.test(receiver)) {
+          const classDefs = candidateDefs.filter(
+            (d) =>
+              d.containerName === receiver ||
+              d.containerName?.toLowerCase() === receiver.toLowerCase()
+          );
+          if (classDefs.length > 0) {
+            candidateDefs = classDefs;
+          }
+        }
+
         // Parse signatures of candidate definitions
         const sigInfos: FunctionSignatureInfo[] = [];
         for (const def of candidateDefs) {
@@ -765,11 +778,21 @@ export class CallArgumentInspector implements vscode.Disposable {
           sigInfos,
         });
 
+        // Detect if explicit `self` or `cls` argument is passed as the first positional argument
+        // (common in base class calls like BoxActionBase.func(self, ...))
+        const firstItem = callArgs.items.length > 0 ? callArgs.items[0] : undefined;
+        const hasExplicitSelf = Boolean(
+          firstItem && !firstItem.isKeyword && (firstItem.text === 'self' || firstItem.text === 'cls')
+        );
+        const effectivePositionalCount = hasExplicitSelf
+          ? Math.max(0, callArgs.positionalCount - 1)
+          : callArgs.positionalCount;
+
         // 1. Check: Too many positional arguments
         let allRejectExcess = true;
         let maxAllowed = 0;
         for (const s of sigInfos) {
-          if (s.hasVarargs || callArgs.positionalCount <= s.maxPositional) {
+          if (s.hasVarargs || effectivePositionalCount <= s.maxPositional) {
             allRejectExcess = false;
             break;
           }
@@ -778,8 +801,10 @@ export class CallArgumentInspector implements vscode.Disposable {
           }
         }
 
-        if (allRejectExcess && callArgs.positionalCount > maxAllowed) {
-          const excessItems = callArgs.items.filter((it) => !it.isKeyword).slice(maxAllowed);
+        if (allRejectExcess && effectivePositionalCount > maxAllowed) {
+          const positionalItems = callArgs.items.filter((it) => !it.isKeyword);
+          const excessSliceStart = hasExplicitSelf ? maxAllowed + 1 : maxAllowed;
+          const excessItems = positionalItems.slice(excessSliceStart);
           const targetRange =
             excessItems.length > 0
               ? new vscode.Range(excessItems[0].range.start, excessItems[excessItems.length - 1].range.end)
@@ -787,7 +812,7 @@ export class CallArgumentInspector implements vscode.Disposable {
               ? new vscode.Range(lineIdx, match.index, lineIdx, openParenChar + 1)
               : callArgs.argRange;
 
-          const errorMsg = `'${methodName}' 最多接收 ${maxAllowed} 个位置参数，但实际传入了 ${callArgs.positionalCount} 个 (PyCharm 风格参数检查)`;
+          const errorMsg = `'${methodName}' 最多接收 ${maxAllowed} 个位置参数，但实际传入了 ${effectivePositionalCount} 个 (PyCharm 风格参数检查)`;
           const diag = new vscode.Diagnostic(
             targetRange,
             `XF OmniNav: ${errorMsg}`,
@@ -801,11 +826,11 @@ export class CallArgumentInspector implements vscode.Disposable {
             decorations.push({
               range: targetRange,
               hoverMessage: new vscode.MarkdownString(
-                `**XF OmniNav: 参数错误 (PyCharm 风格)**\n\n\`${methodName}\` 最多接收 **${maxAllowed}** 个位置参数，但实际传入了 **${callArgs.positionalCount}** 个。`
+                `**XF OmniNav: 参数错误 (PyCharm 风格)**\n\n\`${methodName}\` 最多接收 **${maxAllowed}** 个位置参数，但实际传入了 **${effectivePositionalCount}** 个。`
               ),
               renderOptions: {
                 after: {
-                  contentText: ` ❗参数错误: 期望 ≤${maxAllowed} 个，实传 ${callArgs.positionalCount} 个`,
+                  contentText: ` ❗参数错误: 期望 ≤${maxAllowed} 个，实传 ${effectivePositionalCount} 个`,
                   color: '#ff4d4f',
                   fontWeight: 'bold',
                   fontStyle: 'normal',
@@ -827,7 +852,7 @@ export class CallArgumentInspector implements vscode.Disposable {
               const p = s.params[pIdx];
               if (!p || p.hasDefault || p.isVararg || p.isVarkwarg || p.isKeywordOnly) continue;
               if (p.name === 'self' || p.name === 'cls') continue;
-              if (pIdx < callArgs.positionalCount) continue;
+              if (pIdx < effectivePositionalCount) continue;
               if (callArgs.keywords.includes(p.name)) continue;
               missingForThisSig.push(p.name);
             }
