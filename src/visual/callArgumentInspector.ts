@@ -275,7 +275,10 @@ export class CallArgumentInspector implements vscode.Disposable {
   private lastCalls = new Map<string, ParsedCallInfo[]>();
   private fullAuditTimers = new Map<string, NodeJS.Timeout>();
 
+  private userWhitelistSet: Set<string> = new Set(DEFAULT_CONFIGURED_POLYMORPHIC_METHODS);
+
   constructor(private readonly indexer: SymbolIndexer) {
+    this.refreshPolymorphicWhitelist();
     this.diagnosticCollection =
       vscode.languages.createDiagnosticCollection('xfOmniNav-callArgs');
 
@@ -327,22 +330,39 @@ export class CallArgumentInspector implements vscode.Disposable {
       );
     }
 
+    if (vscode.workspace.onDidChangeConfiguration) {
+      this.disposables.push(
+        vscode.workspace.onDidChangeConfiguration((e) => {
+          if (
+            e.affectsConfiguration('xfOmniNav.polymorphicMethodWhitelist') ||
+            e.affectsConfiguration('inheritanceNavigator.polymorphicMethodWhitelist')
+          ) {
+            this.refreshPolymorphicWhitelist();
+          }
+        })
+      );
+    }
+
     this.disposables.push(this.diagnosticCollection, this.errorDecorationType);
+  }
+
+  private refreshPolymorphicWhitelist(): void {
+    const userWhitelist = getOmniConfig<string[]>(
+      'polymorphicMethodWhitelist',
+      DEFAULT_CONFIGURED_POLYMORPHIC_METHODS
+    );
+    this.userWhitelistSet = new Set(
+      Array.isArray(userWhitelist) ? userWhitelist : DEFAULT_CONFIGURED_POLYMORPHIC_METHODS
+    );
   }
 
   /**
    * Determine whether a method is a common polymorphic / protocol method
    * (e.g. dict.get, list.update, or user-configured service methods).
+   * Fast O(1) Set lookup eliminates repetitive config inspect calls during file scanning.
    */
   public isPolymorphicMethod(methodName: string): boolean {
-    if (COMMON_POLYMORPHIC_METHODS.has(methodName)) {
-      return true;
-    }
-    const userWhitelist = getOmniConfig<string[]>(
-      'polymorphicMethodWhitelist',
-      DEFAULT_CONFIGURED_POLYMORPHIC_METHODS
-    );
-    return Array.isArray(userWhitelist) && userWhitelist.includes(methodName);
+    return COMMON_POLYMORPHIC_METHODS.has(methodName) || this.userWhitelistSet.has(methodName);
   }
 
   /**
@@ -1030,18 +1050,8 @@ export class CallArgumentInspector implements vscode.Disposable {
     const scanStart = scanLineRange ? Math.max(0, scanLineRange.start) : 0;
     const scanEnd = scanLineRange ? Math.min(totalLines - 1, scanLineRange.end) : totalLines - 1;
 
-    let linesCache: string[] | null = null;
-    const getLine = (l: number): string => {
-      if (typeof document.lineAt === 'function') {
-        try {
-          return document.lineAt(l).text;
-        } catch {}
-      }
-      if (!linesCache) {
-        linesCache = document.getText().split(/\r?\n/);
-      }
-      return linesCache[l] || '';
-    };
+    const linesCache = document.getText().split(/\r?\n/);
+    const getLine = (l: number): string => linesCache[l] ?? '';
 
     let currentClassName: string | null = null;
     let currentClassIndent = -1;

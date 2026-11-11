@@ -193,11 +193,35 @@ export const ICON_DATA_URIS = {
   error_badge: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxNiAxNiIgd2lkdGg9IjE2IiBoZWlnaHQ9IjE2Ij4KICA8Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNyIgZmlsbD0iI0VGNDQ0NCIgLz4KICA8cmVjdCB4PSI3IiB5PSIzLjUiIHdpZHRoPSIyIiBoZWlnaHQ9IjUuNSIgcng9IjEiIGZpbGw9IiNGRkZGRkYiIC8+CiAgPGNpcmNsZSBjeD0iOCIgY3k9IjExLjUiIHI9IjEuMiIgZmlsbD0iI0ZGRkZGRiIgLz4KPC9zdmc+',
 };
 
+const configCache = new Map<string, any>();
+
+// Automatically invalidate config cache on configuration change
+if (vscode.workspace && typeof vscode.workspace.onDidChangeConfiguration === 'function') {
+  vscode.workspace.onDidChangeConfiguration((event) => {
+    if (isOmniConfigAffected(event)) {
+      configCache.clear();
+    }
+  });
+}
+
+/**
+ * Clear the in-memory configuration cache (useful for tests or explicit reload).
+ */
+export function clearOmniConfigCache(): void {
+  configCache.clear();
+}
+
 /**
  * Get configuration value with multi-level fallback:
- * xfOmniNav -> xfOmniTree / xfOmniJump -> inheritanceNavigator / smoothJump
+ * xfOmniNav -> xfOmniTree / xfOmniJump -> inheritanceNavigator / smoothJump.
+ * Uses an in-memory O(1) cache invalidated on configuration change to eliminate
+ * thousands of expensive getConfiguration() and inspect() calls during editor interactions.
  */
 export function getOmniConfig<T>(key: string, defaultValue: T): T {
+  if (configCache.has(key)) {
+    return configCache.get(key) as T;
+  }
+
   const sections = ['xfOmniNav', 'xfOmniTree', 'xfOmniJump', 'inheritanceNavigator', 'smoothJump'];
   for (const section of sections) {
     try {
@@ -205,12 +229,15 @@ export function getOmniConfig<T>(key: string, defaultValue: T): T {
       const inspected = cfg.inspect<T>(key);
       if (inspected) {
         if (inspected.workspaceFolderValue !== undefined) {
+          configCache.set(key, inspected.workspaceFolderValue);
           return inspected.workspaceFolderValue;
         }
         if (inspected.workspaceValue !== undefined) {
+          configCache.set(key, inspected.workspaceValue);
           return inspected.workspaceValue;
         }
         if (inspected.globalValue !== undefined) {
+          configCache.set(key, inspected.globalValue);
           return inspected.globalValue;
         }
       }
@@ -220,7 +247,9 @@ export function getOmniConfig<T>(key: string, defaultValue: T): T {
   }
 
   const navCfg = vscode.workspace.getConfiguration('xfOmniNav');
-  return navCfg.get<T>(key, defaultValue);
+  const result = navCfg.get<T>(key, defaultValue);
+  configCache.set(key, result);
+  return result;
 }
 
 /**

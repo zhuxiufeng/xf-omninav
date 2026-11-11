@@ -272,6 +272,38 @@ export class ContextResolver {
   }
 
   private static variablePatternCache = new Map<string, RegExp[]>();
+  private static literalPatternCache = new Map<
+    string,
+    {
+      dict: RegExp;
+      list: RegExp;
+      set: RegExp;
+      tuple: RegExp;
+      str: RegExp;
+      bool: RegExp;
+      number: RegExp;
+    }
+  >();
+
+  private static getLiteralPatterns(escaped: string) {
+    let p = this.literalPatternCache.get(escaped);
+    if (!p) {
+      if (this.literalPatternCache.size > 500) {
+        this.literalPatternCache.clear();
+      }
+      p = {
+        dict: new RegExp(`^${escaped}\\s*=\\s*(\\{|dict\\s*\\()`),
+        list: new RegExp(`^${escaped}\\s*=\\s*(\\[|list\\s*\\()`),
+        set: new RegExp(`^${escaped}\\s*=\\s*set\\s*\\(`),
+        tuple: new RegExp(`^${escaped}\\s*=\\s*tuple\\s*\\(`),
+        str: new RegExp(`^${escaped}\\s*=\\s*[fFrRbBuU]?['"]`),
+        bool: new RegExp(`^${escaped}\\s*=\\s*(?:True|False)\\b`),
+        number: new RegExp(`^${escaped}\\s*=\\s*\\d+(?:\\.\\d+)?\\b`),
+      };
+      this.literalPatternCache.set(escaped, p);
+    }
+    return p;
+  }
 
   private static getVariablePatterns(escaped: string): RegExp[] {
     let patterns = this.variablePatternCache.get(escaped);
@@ -313,6 +345,7 @@ export class ContextResolver {
   ): string | undefined {
     const escaped = varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const patterns = this.getVariablePatterns(escaped);
+    const literals = this.getLiteralPatterns(escaped);
 
     const minLine = Math.max(0, callLine - 60);
     for (let i = callLine - 1; i >= minLine; i--) {
@@ -322,25 +355,25 @@ export class ContextResolver {
       }
 
       // Check standard Python literal assignments (e.g. result = { ... }, items = [ ... ])
-      if (new RegExp(`^${escaped}\\s*=\\s*(\\{|dict\\s*\\()`).test(line)) {
+      if (literals.dict.test(line)) {
         return 'dict';
       }
-      if (new RegExp(`^${escaped}\\s*=\\s*(\\[|list\\s*\\()`).test(line)) {
+      if (literals.list.test(line)) {
         return 'list';
       }
-      if (new RegExp(`^${escaped}\\s*=\\s*set\\s*\\(`).test(line)) {
+      if (literals.set.test(line)) {
         return 'set';
       }
-      if (new RegExp(`^${escaped}\\s*=\\s*tuple\\s*\\(`).test(line)) {
+      if (literals.tuple.test(line)) {
         return 'tuple';
       }
-      if (new RegExp(`^${escaped}\\s*=\\s*[fFrRbBuU]?['"]`).test(line)) {
+      if (literals.str.test(line)) {
         return 'str';
       }
-      if (new RegExp(`^${escaped}\\s*=\\s*(?:True|False)\\b`).test(line)) {
+      if (literals.bool.test(line)) {
         return 'bool';
       }
-      if (new RegExp(`^${escaped}\\s*=\\s*\\d+(?:\\.\\d+)?\\b`).test(line)) {
+      if (literals.number.test(line)) {
         return 'number';
       }
 
@@ -398,6 +431,9 @@ export class ContextResolver {
     return undefined;
   }
 
+  private static selfPropCache = new Map<string, { version: number; type: string | undefined }>();
+  private static chainedPropCache = new Map<string, { version: number; type: string | undefined }>();
+
   /**
    * Infer the type of a chained property access like `self.A.B` by:
    * 1. Inferring `A`'s type from the current document (self property scan)
@@ -413,6 +449,13 @@ export class ContextResolver {
   ): string | undefined {
     const parts = propChain.replace(/^(?:self|this)\./, '').split('.');
     if (parts.length < 2) return undefined;
+
+    const docVer = (document as any).version ?? 0;
+    const cacheKey = `${document.uri.toString()}#${propChain}`;
+    const cached = this.chainedPropCache.get(cacheKey);
+    if (cached && cached.version === docVer) {
+      return cached.type;
+    }
 
     // Traverse the chain step by step:
     // parts = ['box_state', 'Tn_data'] or ['box_action', 'box_state', 'Tn_data']
@@ -480,12 +523,16 @@ export class ContextResolver {
       }
 
       if (isLast) {
+        if (this.chainedPropCache.size > 1000) this.chainedPropCache.clear();
+        this.chainedPropCache.set(cacheKey, { version: docVer, type: nextType });
         return nextType;
       }
       currentContainer = nextType;
       if (!currentContainer) break;
     }
 
+    if (this.chainedPropCache.size > 1000) this.chainedPropCache.clear();
+    this.chainedPropCache.set(cacheKey, { version: docVer, type: undefined });
     return undefined;
   }
 
@@ -498,6 +545,14 @@ export class ContextResolver {
     currentLine?: number
   ): string | undefined {
     const cleanProp = propName.replace(/^(?:self|this)\./, '');
+
+    const docVer = (document as any).version ?? 0;
+    const cacheKey = `${document.uri.toString()}#${cleanProp}`;
+    const cached = this.selfPropCache.get(cacheKey);
+    if (cached && cached.version === docVer) {
+      return cached.type;
+    }
+
     const escaped = cleanProp.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
     // 1. Match factory / lookup / service locator pattern:
@@ -524,6 +579,12 @@ export class ContextResolver {
       `(?:self|this)\\.${escaped}\\s*=\\s*${escaped}\\b`
     );
 
+    const recordResult = (res: string | undefined) => {
+      if (this.selfPropCache.size > 1000) this.selfPropCache.clear();
+      this.selfPropCache.set(cacheKey, { version: docVer, type: res });
+      return res;
+    };
+
     const totalLines = typeof document.lineCount === 'number' ? document.lineCount : 5000;
     // Scan up to first 800 lines (where __init__ and setup methods reside)
     const scanLimit = Math.min(totalLines, 800);
@@ -533,23 +594,23 @@ export class ContextResolver {
 
       const mLookup = line.match(lookupRegex);
       if (mLookup && mLookup[1]) {
-        return mLookup[1];
+        return recordResult(mLookup[1]);
       }
       const mGetter = line.match(getterRegex);
       if (mGetter && mGetter[1]) {
-        return mGetter[1];
+        return recordResult(mGetter[1]);
       }
       const mClass = line.match(classRegex);
       if (mClass && mClass[1]) {
-        return mClass[1];
+        return recordResult(mClass[1]);
       }
       const mParam = line.match(paramRegex);
       if (mParam) {
-        return this.snakeToPascal(cleanProp);
+        return recordResult(this.snakeToPascal(cleanProp));
       }
     }
 
-    return undefined;
+    return recordResult(undefined);
   }
 
   /**

@@ -15,6 +15,7 @@ export class SymbolIndexer implements vscode.Disposable {
   private classHierarchy: Map<string, string[]> = new Map();
   private classMethods: Map<string, Set<string>> = new Map();
   private directSubClasses: Map<string, Set<string>> = new Map(); // normalizedBaseClassName -> Set<subClassName>
+  private containerSymbolMap: Map<string, Map<string, SymbolDefinition[]>> = new Map(); // cleanContainer -> (symbolName -> defs)
   private fileClassesMap: Map<string, string[]> = new Map();
   private fileMtimeMap: Map<string, number> = new Map();
 
@@ -348,6 +349,22 @@ export class SymbolIndexer implements vscode.Disposable {
         }
         methods.add(def.name);
       }
+
+      // 6. Fast O(1) container symbol lookup map
+      if (def.containerName) {
+        const cleanCont = def.containerName.toLowerCase().replace(/[^a-z0-9]/g, '');
+        let symMap = this.containerSymbolMap.get(cleanCont);
+        if (!symMap) {
+          symMap = new Map();
+          this.containerSymbolMap.set(cleanCont, symMap);
+        }
+        let list = symMap.get(def.name);
+        if (!list) {
+          list = [];
+          symMap.set(def.name, list);
+        }
+        list.push(def);
+      }
     }
 
     if (fileClasses.length > 0) {
@@ -422,6 +439,26 @@ export class SymbolIndexer implements vscode.Disposable {
           else this.prefixMap.set(p3, filtered);
         }
       }
+
+      // Remove from containerSymbolMap
+      if (def.containerName) {
+        const cleanCont = def.containerName.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const symMap = this.containerSymbolMap.get(cleanCont);
+        if (symMap) {
+          const list = symMap.get(def.name);
+          if (list) {
+            const filtered = list.filter((d) => d.uri.toString() !== uriStr);
+            if (filtered.length === 0) {
+              symMap.delete(def.name);
+              if (symMap.size === 0) {
+                this.containerSymbolMap.delete(cleanCont);
+              }
+            } else {
+              symMap.set(def.name, filtered);
+            }
+          }
+        }
+      }
     }
 
     const classes = this.fileClassesMap.get(uriStr);
@@ -479,17 +516,32 @@ export class SymbolIndexer implements vscode.Disposable {
     symbolName: string,
     preferredUri?: vscode.Uri | string
   ): SymbolDefinition[] {
-    const candidates = this.findExact(symbolName);
     const cleanContainer = containerName.toLowerCase().replace(/[^a-z0-9]/g, '');
-    const matched = candidates.filter((def) => {
-      if (!def.containerName) return false;
-      const cleanDef = def.containerName.toLowerCase().replace(/[^a-z0-9]/g, '');
-      return (
-        cleanDef === cleanContainer ||
-        cleanDef.includes(cleanContainer) ||
-        cleanContainer.includes(cleanDef)
-      );
-    });
+
+    // 1. Fast O(1) indexed lookup by container and symbol name
+    const symMap = this.containerSymbolMap.get(cleanContainer);
+    let matched: SymbolDefinition[] = [];
+    if (symMap) {
+      const direct = symMap.get(symbolName);
+      if (direct && direct.length > 0) {
+        matched = direct;
+      }
+    }
+
+    // 2. Fallback: fuzzy/partial container name match (e.g. subclass or prefix/suffix)
+    if (matched.length === 0) {
+      const candidates = this.findExact(symbolName);
+      matched = candidates.filter((def) => {
+        if (!def.containerName) return false;
+        const cleanDef = def.containerName.toLowerCase().replace(/[^a-z0-9]/g, '');
+        return (
+          cleanDef === cleanContainer ||
+          cleanDef.includes(cleanContainer) ||
+          cleanContainer.includes(cleanDef)
+        );
+      });
+    }
+
     if (!preferredUri || matched.length <= 1) {
       return matched;
     }
@@ -997,6 +1049,7 @@ export class SymbolIndexer implements vscode.Disposable {
       clearTimeout(timer);
     }
     this.pendingChanges.clear();
+    this.containerSymbolMap.clear();
     this._onDidIndexUpdate.dispose();
     this.disposables.forEach((d) => d.dispose());
   }
