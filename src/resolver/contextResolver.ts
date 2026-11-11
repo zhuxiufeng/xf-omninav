@@ -427,6 +427,12 @@ export class ContextResolver {
       `(?:self|this)\\.${escaped}\\s*=\\s*(?:[A-Za-z0-9_]+\\.)*([A-Z][A-Za-z0-9_]*)\\s*\\(`
     );
 
+    // 2.5 Match parameter assignment pattern:
+    // e.g. self.box_state = box_state -> BoxState
+    const paramRegex = new RegExp(
+      `(?:self|this)\\.${escaped}\\s*=\\s*${escaped}\\b`
+    );
+
     const totalLines = typeof document.lineCount === 'number' ? document.lineCount : 5000;
     // Scan up to first 800 lines (where __init__ and setup methods reside)
     const scanLimit = Math.min(totalLines, 800);
@@ -445,6 +451,10 @@ export class ContextResolver {
       const mClass = line.match(classRegex);
       if (mClass && mClass[1]) {
         return mClass[1];
+      }
+      const mParam = line.match(paramRegex);
+      if (mParam) {
+        return this.snakeToPascal(cleanProp);
       }
     }
 

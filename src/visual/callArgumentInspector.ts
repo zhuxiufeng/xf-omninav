@@ -1144,6 +1144,17 @@ export class CallArgumentInspector implements vscode.Disposable {
           if (!inferredType) {
             inferredType = ContextResolver.inferSelfPropertyType(document, rawProp, lineIdx);
           }
+          if (!inferredType && !isGeneric) {
+            const pascalTerminal = ContextResolver.snakeToPascal(terminalProp);
+            if (this.indexer.findByContainer(pascalTerminal, methodName).length > 0) {
+              inferredType = pascalTerminal;
+            } else if (rawProp !== terminalProp) {
+              const pascalRaw = ContextResolver.snakeToPascal(rawProp);
+              if (this.indexer.findByContainer(pascalRaw, methodName).length > 0) {
+                inferredType = pascalRaw;
+              }
+            }
+          }
           let hasComponentMatch = false;
           // Component name match fallback: e.g. gcode, toolhead, printer
           if (!inferredType && !isGeneric) {

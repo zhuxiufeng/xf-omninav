@@ -1136,6 +1136,37 @@ def configure(options={}):
     assert.equal(parsedSig.params[1].name, 'b');
   });
 
+  await t.test('inspectDocument: self.box_state.get_box_mode(BoxProtol.START_ADDR, 1, 2) should detect excess arguments', async () => {
+    const boxStateDoc = new (vscode as any).MockTextDocument(
+      `class BoxState:
+    def get_box_mode(self, addr):
+        return 0
+`,
+      '/workspace/box_state_def.py',
+      'python'
+    );
+    await indexer.indexDocument(boxStateDoc);
+
+    const callerDoc = new (vscode as any).MockTextDocument(
+      `class BoxAction:
+    def __init__(self, config, box_state):
+        self.box_state = box_state
+
+    def process(self):
+        self.get_material_info_before_replace_nozzle()
+        box_mode = self.box_state.get_box_mode(BoxProtol.START_ADDR, 1, 2)
+        valid_mode = self.box_state.get_box_mode(BoxProtol.START_ADDR)
+`,
+      '/workspace/box_action_caller.py',
+      'python'
+    );
+
+    const diagnostics = inspector.inspectDocument(callerDoc);
+    assert.equal(diagnostics.length, 1, 'Should detect excess arguments on get_box_mode call');
+    assert.ok(diagnostics[0].message.includes("'get_box_mode' 最多接收 1 个位置参数"));
+    assert.ok(diagnostics[0].message.includes('实际传入了 3 个'));
+  });
+
   await t.test('OmniStatusBar: should format symbol count and indexing status cleanly', async () => {
     const statusBar = new OmniStatusBar(indexer);
     statusBar.update();
