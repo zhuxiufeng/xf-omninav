@@ -15,7 +15,9 @@ export class DynamicTypeHoverProvider implements vscode.HoverProvider {
     _token: vscode.CancellationToken
   ): vscode.ProviderResult<vscode.Hover> {
     if (document.languageId !== 'python' && document.languageId !== 'typescript') return undefined;
-    const isEnabled = getOmniConfig<boolean>('enableKlipperHover', true);
+    const isEnabled =
+      getOmniConfig<boolean>('enableDynamicTypeHover', true) &&
+      getOmniConfig<boolean>('enableKlipperHover', true);
     if (!isEnabled) return undefined;
 
     const wordRange = document.getWordRangeAtPosition(position);

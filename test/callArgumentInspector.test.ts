@@ -5,7 +5,10 @@ import { CallArgumentInspector } from '../src/visual/callArgumentInspector';
 import { SymbolIndexer } from '../src/indexer/symbolIndexer';
 import { PythonParamInlayHintsProvider } from '../src/visual/pythonParamInlayHints';
 import { CallArgumentCodeActionProvider } from '../src/visual/callArgumentCodeActions';
-import { KlipperHoverProvider } from '../src/navigation/klipperHoverProvider';
+import {
+  DynamicTypeHoverProvider,
+  KlipperHoverProvider,
+} from '../src/navigation/dynamicTypeHoverProvider';
 import { SymbolParser } from '../src/indexer/symbolParser';
 import { ContextResolver } from '../src/resolver/contextResolver';
 import { OmniStatusBar } from '../src/statusBar/omniStatusBar';

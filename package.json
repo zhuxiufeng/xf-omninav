@@ -1,8 +1,8 @@
 {
   "name": "xf-omninav",
   "displayName": "XF OmniNav",
-  "description": "PyCharm-style silky-smooth omni symbol navigation, class & method inheritance hierarchy, gutter markers & 1-click CodeLens.",
-  "version": "1.0.37",
+  "description": "PyCharm-grade universal IDE enhancement & navigation suite: precision symbol & inheritance navigation, heuristic call argument inspection, independent branch folding, file error badges, and status bar monitor.",
+  "version": "1.0.38",
   "publisher": "Vivian",
   "icon": "resources/icon.png",
   "repository": {
@@ -317,10 +317,44 @@
           "default": true,
           "description": "Display PyCharm-style inline parameter name hints before arguments in Python calls."
         },
+        "xfOmniNav.enableDynamicTypeHover": {
+          "type": "boolean",
+          "default": true,
+          "description": "Display rich hover card for dynamically inferred Python / TypeScript variables and factory service references."
+        },
         "xfOmniNav.enableKlipperHover": {
           "type": "boolean",
           "default": true,
-          "description": "Display rich hover card for Klipper lookup_object components and dynamic variables."
+          "description": "Legacy alias for enableDynamicTypeHover."
+        },
+        "xfOmniNav.polymorphicMethodWhitelist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "get_status",
+            "get_name",
+            "get_state",
+            "get_time",
+            "get_position",
+            "get_temp",
+            "get_temperature",
+            "get_commanders",
+            "stats",
+            "dump_debug",
+            "handle_connect",
+            "handle_ready",
+            "handle_shutdown",
+            "respond_info",
+            "respond_raw",
+            "register_command",
+            "lookup_object",
+            "raw_command",
+            "run_script",
+            "run_script_from_command"
+          ],
+          "description": "Custom method names with polymorphic signatures across classes/services to skip false-positive heuristic call warnings."
         },
         "xfOmniNav.enableGitPreScan": {
           "type": "boolean",

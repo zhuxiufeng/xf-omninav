@@ -174,7 +174,12 @@ export const COMMON_POLYMORPHIC_METHODS = new Set([
   'endswith',
   'lower',
   'upper',
-  // Common Klipper & hardware protocol methods implemented with varying signatures across components
+]);
+
+/**
+ * Universal default polymorphic methods across dynamic frameworks & services.
+ */
+export const DEFAULT_CONFIGURED_POLYMORPHIC_METHODS: string[] = [
   'get_status',
   'get_name',
   'get_state',
@@ -195,7 +200,7 @@ export const COMMON_POLYMORPHIC_METHODS = new Set([
   'raw_command',
   'run_script',
   'run_script_from_command',
-]);
+];
 
 /**
  * PyCharm-style Heuristic Call Arguments Inspector.
@@ -265,6 +270,21 @@ export class CallArgumentInspector implements vscode.Disposable {
     }
 
     this.disposables.push(this.diagnosticCollection, this.errorDecorationType);
+  }
+
+  /**
+   * Determine whether a method is a common polymorphic / protocol method
+   * (e.g. dict.get, list.update, or user-configured service methods).
+   */
+  public isPolymorphicMethod(methodName: string): boolean {
+    if (COMMON_POLYMORPHIC_METHODS.has(methodName)) {
+      return true;
+    }
+    const userWhitelist = getOmniConfig<string[]>(
+      'polymorphicMethodWhitelist',
+      DEFAULT_CONFIGURED_POLYMORPHIC_METHODS
+    );
+    return Array.isArray(userWhitelist) && userWhitelist.includes(methodName);
   }
 
   /**
@@ -710,7 +730,7 @@ export class CallArgumentInspector implements vscode.Disposable {
         }
 
         // Skip common polymorphic/built-in methods unless receiver is 'self'/'cls'
-        if (COMMON_POLYMORPHIC_METHODS.has(methodName)) {
+        if (this.isPolymorphicMethod(methodName)) {
           if (receiver !== 'self' && receiver !== 'cls') {
             continue;
           }
@@ -739,10 +759,10 @@ export class CallArgumentInspector implements vscode.Disposable {
           );
           if (classSpecific.length > 0) {
             candidateDefs = classSpecific;
-          } else if (COMMON_POLYMORPHIC_METHODS.has(methodName)) {
+          } else if (this.isPolymorphicMethod(methodName)) {
             continue;
           }
-        } else if ((receiver === 'self' || receiver === 'cls') && COMMON_POLYMORPHIC_METHODS.has(methodName)) {
+        } else if ((receiver === 'self' || receiver === 'cls') && this.isPolymorphicMethod(methodName)) {
           continue;
         } else if (receiver && receiver !== 'self' && receiver !== 'cls') {
           // If receiver is a variable, check if it was inferred to a specific class (e.g. lookup_object)
