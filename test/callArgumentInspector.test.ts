@@ -1167,6 +1167,88 @@ def configure(options={}):
     assert.ok(diagnostics[0].message.includes('实际传入了 3 个'));
   });
 
+  await t.test('inspectDocument: self.box_state.Tn_data.get("enable", 3,3,3,3,3,3,3) should detect excess dict.get() args', async () => {
+    // This tests chained property inference: self.box_state.Tn_data is a dict (BoxState.__init__ has self.Tn_data = {})
+    const boxStateDoc = new (vscode as any).MockTextDocument(
+      `class BoxState:
+    def __init__(self, config):
+        self.Tn_data = {}  # Tn's data to app
+
+    def get_box_mode(self, addr):
+        return 0
+`,
+      '/workspace/box_wrapper.py',
+      'python'
+    );
+    await indexer.indexDocument(boxStateDoc);
+
+    const callerDoc = new (vscode as any).MockTextDocument(
+      `class BoxActionWrapper:
+    def __init__(self, config, box_state):
+        self.box_state = box_state
+
+    def is_box_ready(self):
+        # dict.get(key, default) — only 2 args allowed; passing 8 should be flagged
+        return (self.box_state.Tn_data.get("enable", 3, 3, 3, 3, 3, 3, 3) == 1
+                and self.box_state.Tn_data.get("state") == "connect")
+`,
+      '/workspace/box_nano_wrapper.py',
+      'python'
+    );
+
+    const diagnostics = inspector.inspectDocument(callerDoc);
+    const dictGetDiag = diagnostics.find((d) => d.message.includes('dict.get'));
+    assert.ok(dictGetDiag, 'Should detect excess arguments on dict.get() call');
+    assert.ok(
+      dictGetDiag.message.includes('8') || dictGetDiag.message.includes('7'),
+      `Diagnostic should mention arg count, got: ${dictGetDiag.message}`
+    );
+  });
+
+  await t.test('inspectDocument: self.box_state.Tn_data.get("state") with valid args should NOT flag', async () => {
+    const boxStateDoc2 = new (vscode as any).MockTextDocument(
+      `class BoxState:
+    def __init__(self, config):
+        self.Tn_data = {}
+`,
+      '/workspace/box_wrapper2.py',
+      'python'
+    );
+    await indexer.indexDocument(boxStateDoc2);
+
+    const callerDoc2 = new (vscode as any).MockTextDocument(
+      `class BoxActionWrapper2:
+    def __init__(self, config, box_state):
+        self.box_state = box_state
+
+    def check_state(self):
+        return self.box_state.Tn_data.get("state") == "connect"
+`,
+      '/workspace/box_nano_wrapper2.py',
+      'python'
+    );
+
+    const diagnostics = inspector.inspectDocument(callerDoc2);
+    const dictGetDiag = diagnostics.find((d) => d.message.includes('dict.get'));
+    assert.ok(!dictGetDiag, `Valid dict.get("state") should NOT be flagged, but got: ${dictGetDiag?.message}`);
+  });
+
+  await t.test('inspectDocument: list.append(x, y) with excess args should be detected', async () => {
+    const doc = new (vscode as any).MockTextDocument(
+      `def process():
+    items = []
+    items.append(1, 2)
+    items.append(3)
+`,
+      '/workspace/list_test.py',
+      'python'
+    );
+
+    const diagnostics = inspector.inspectDocument(doc);
+    const listDiag = diagnostics.find((d) => d.message.includes('list.append'));
+    assert.ok(listDiag, `Should detect excess args on list.append(1, 2), got diagnostics: ${JSON.stringify(diagnostics.map(d => d.message))}`);
+  });
+
   await t.test('OmniStatusBar: should format symbol count and indexing status cleanly', async () => {
     const statusBar = new OmniStatusBar(indexer);
     statusBar.update();

@@ -399,6 +399,97 @@ export class ContextResolver {
   }
 
   /**
+   * Infer the type of a chained property access like `self.A.B` by:
+   * 1. Inferring `A`'s type from the current document (self property scan)
+   * 2. If `A` resolves to a class, scanning a sibling document (via indexer) for `self.B = {…}` patterns
+   *
+   * Returns the inferred type for `B`, or `undefined` if unresolvable.
+   */
+  public static inferChainedPropertyType(
+    document: vscode.TextDocument,
+    propChain: string,
+    callLine: number,
+    indexer?: { findByContainer?: (container: string, name: string, preferredUri?: string) => SymbolDefinition[]; findExact?: (name: string) => SymbolDefinition[] }
+  ): string | undefined {
+    const parts = propChain.replace(/^(?:self|this)\./, '').split('.');
+    if (parts.length < 2) return undefined;
+
+    // Traverse the chain step by step:
+    // parts = ['box_state', 'Tn_data'] or ['box_action', 'box_state', 'Tn_data']
+    let currentContainer: string | undefined = this.inferSelfPropertyType(document, parts[0], callLine);
+    if (!currentContainer) {
+      currentContainer = this.snakeToPascal(parts[0]);
+    }
+
+    const parseSignatureType = (sig: string, attr: string): string | undefined => {
+      const esc = attr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (new RegExp(`(?:self|this)\\.${esc}\\s*=\\s*(\\{|dict\\b)`).test(sig)) return 'dict';
+      if (new RegExp(`(?:self|this)\\.${esc}\\s*=\\s*(\\[|list\\b)`).test(sig)) return 'list';
+      if (new RegExp(`(?:self|this)\\.${esc}\\s*=\\s*set\\b`).test(sig)) return 'set';
+      if (new RegExp(`(?:self|this)\\.${esc}\\s*=\\s*[fFrRbBuU]?['"]`).test(sig)) return 'str';
+      if (new RegExp(`(?:self|this)\\.${esc}\\s*=\\s*\\d+(?:\\.\\d+)?\\b`).test(sig)) return 'number';
+      if (new RegExp(`(?:self|this)\\.${esc}\\s*=\\s*(?:True|False)\\b`).test(sig)) return 'bool';
+      const cls = sig.match(new RegExp(`(?:self|this)\\.${esc}\\s*=\\s*(?:[A-Za-z0-9_]+\\.)*([A-Z][A-Za-z0-9_]*)\\s*\\(`));
+      if (cls && cls[1]) return cls[1];
+      const lk = sig.match(new RegExp(`(?:self|this)\\.${esc}\\s*=\\s*.*?(?:lookup_object|load_object|get_service|get_component)\\s*\\(\\s*['"]([A-Za-z0-9_]+)['"]`));
+      if (lk && lk[1]) return lk[1];
+      return undefined;
+    };
+
+    for (let step = 1; step < parts.length; step++) {
+      const targetProp = parts[step];
+      const isLast = step === parts.length - 1;
+      let nextType: string | undefined;
+
+      // 1. Try indexer by container and property name
+      if (indexer?.findByContainer && currentContainer) {
+        const defs = indexer.findByContainer(currentContainer, targetProp);
+        for (const def of defs) {
+          if (def.signature) {
+            nextType = parseSignatureType(def.signature, targetProp);
+            if (nextType) break;
+          }
+        }
+      }
+
+      // 2. Try scanning the current document if currentContainer is defined locally
+      if (!nextType && currentContainer) {
+        const totalLines = typeof document.lineCount === 'number' ? document.lineCount : 5000;
+        let classStart = -1;
+        for (let i = 0; i < totalLines; i++) {
+          const lineText = typeof document.lineAt === 'function' ? document.lineAt(i).text : '';
+          if (new RegExp(`^class\\s+${currentContainer}\\b`).test(lineText.trim())) {
+            classStart = i;
+            break;
+          }
+        }
+        if (classStart >= 0) {
+          const scanTo = Math.min(totalLines, classStart + 400);
+          for (let i = classStart; i < scanTo; i++) {
+            const line = typeof document.lineAt === 'function' ? document.lineAt(i).text : '';
+            if (!line.includes(targetProp)) continue;
+            nextType = parseSignatureType(line, targetProp);
+            if (nextType) break;
+          }
+        }
+      }
+
+      if (!nextType) {
+        // Fallback: snake_case to PascalCase for intermediate classes
+        nextType = isLast ? undefined : this.snakeToPascal(targetProp);
+      }
+
+      if (isLast) {
+        return nextType;
+      }
+      currentContainer = nextType;
+      if (!currentContainer) break;
+    }
+
+    return undefined;
+  }
+
+  /**
    * Infer property type from self.<propName> = ClassName(...) or lookup_object('...') or this.<propName> = ...
    */
   public static inferSelfPropertyType(

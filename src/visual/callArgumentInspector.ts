@@ -183,6 +183,65 @@ export const COMMON_POLYMORPHIC_METHODS = new Set([
 ]);
 
 /**
+ * Python built-in type method signatures for exact argument count checking.
+ * Maps "type.method" -> { min, max } positional args (excluding self).
+ * Only methods with strict, well-known signatures are listed here.
+ * This allows precise error detection even for dict.get(), list.append(), etc.
+ */
+export const PYTHON_BUILTIN_TYPE_METHOD_SIGS: Record<string, { min: number; max: number }> = {
+  // dict
+  'dict.get': { min: 1, max: 2 },        // get(key[, default])
+  'dict.pop': { min: 1, max: 2 },        // pop(key[, default])
+  'dict.update': { min: 0, max: 1 },     // update([other])
+  'dict.setdefault': { min: 1, max: 2 }, // setdefault(key[, default])
+  'dict.keys': { min: 0, max: 0 },
+  'dict.values': { min: 0, max: 0 },
+  'dict.items': { min: 0, max: 0 },
+  'dict.clear': { min: 0, max: 0 },
+  'dict.copy': { min: 0, max: 0 },
+  'dict.popitem': { min: 0, max: 0 },
+  // list
+  'list.append': { min: 1, max: 1 },     // append(item)
+  'list.insert': { min: 2, max: 2 },     // insert(index, item)
+  'list.remove': { min: 1, max: 1 },     // remove(item)
+  'list.pop': { min: 0, max: 1 },        // pop([index])
+  'list.index': { min: 1, max: 3 },      // index(item[, start[, end]])
+  'list.count': { min: 1, max: 1 },
+  'list.extend': { min: 1, max: 1 },     // extend(iterable)
+  'list.sort': { min: 0, max: 0 },       // sort(*, key=None, reverse=False) — no positional
+  'list.reverse': { min: 0, max: 0 },
+  'list.clear': { min: 0, max: 0 },
+  'list.copy': { min: 0, max: 0 },
+  // set
+  'set.add': { min: 1, max: 1 },
+  'set.discard': { min: 1, max: 1 },
+  'set.remove': { min: 1, max: 1 },
+  'set.pop': { min: 0, max: 0 },
+  'set.clear': { min: 0, max: 0 },
+  'set.update': { min: 1, max: 99 },     // variadic
+  'set.union': { min: 1, max: 99 },
+  'set.intersection': { min: 1, max: 99 },
+  'set.difference': { min: 1, max: 99 },
+  // str
+  'str.split': { min: 0, max: 2 },       // split([sep[, maxsplit]])
+  'str.strip': { min: 0, max: 1 },
+  'str.lstrip': { min: 0, max: 1 },
+  'str.rstrip': { min: 0, max: 1 },
+  'str.startswith': { min: 1, max: 3 },
+  'str.endswith': { min: 1, max: 3 },
+  'str.find': { min: 1, max: 3 },
+  'str.replace': { min: 2, max: 3 },
+  'str.format': { min: 0, max: 99 },     // variadic
+  'str.join': { min: 1, max: 1 },
+  'str.encode': { min: 0, max: 2 },
+  'str.decode': { min: 0, max: 2 },
+  'str.upper': { min: 0, max: 0 },
+  'str.lower': { min: 0, max: 0 },
+  'str.count': { min: 1, max: 3 },
+  'str.index': { min: 1, max: 3 },
+};
+
+/**
  * Universal default polymorphic methods across dynamic frameworks & services.
  */
 export const DEFAULT_CONFIGURED_POLYMORPHIC_METHODS: string[] = [
@@ -1105,7 +1164,44 @@ export class CallArgumentInspector implements vscode.Disposable {
           (d) => d.kind === 'method' || d.kind === 'function'
         );
 
+        // Fast path: before giving up on empty candidateDefs, check if the receiver
+        // is a known built-in type (dict/list/str/etc.) with a known method signature.
+        // This handles cases like `items.append(1, 2)` or `self.prop.Tn_data.get(a,b,c,...)`.
         if (candidateDefs.length === 0) {
+          // Try to infer receiver type for built-in type method check
+          let builtinType: string | undefined;
+          if (receiver) {
+            const rawPropFast = receiver.replace(/^(?:self|this)\./, '');
+            const receiverPartsFast = receiver.split('.');
+            const terminalPropFast = receiverPartsFast[receiverPartsFast.length - 1];
+            builtinType = ContextResolver.inferVariableType(document, receiver, lineIdx, this.indexer);
+            if (!builtinType && rawPropFast.includes('.')) {
+              builtinType = ContextResolver.inferChainedPropertyType(document, rawPropFast, lineIdx, this.indexer);
+            }
+            if (!builtinType) {
+              builtinType = ContextResolver.inferVariableType(document, terminalPropFast, lineIdx, this.indexer);
+            }
+          }
+          if (builtinType && ['dict', 'list', 'set', 'str'].includes(builtinType)) {
+            const sigKey = `${builtinType}.${methodName}`;
+            const builtinSig = PYTHON_BUILTIN_TYPE_METHOD_SIGS[sigKey];
+            if (builtinSig) {
+              const posCount = callArgs.positionalCount;
+              if (posCount < builtinSig.min || posCount > builtinSig.max) {
+                const rangeStr = builtinSig.min === builtinSig.max
+                  ? `${builtinSig.min}`
+                  : `${builtinSig.min}–${builtinSig.max}`;
+                const diag = new vscode.Diagnostic(
+                  callArgs.argRange,
+                  `${builtinType}.${methodName}() takes ${rangeStr} argument(s), but ${posCount} were given`,
+                  vscode.DiagnosticSeverity.Error
+                );
+                diag.source = 'OmniNav';
+                diag.code = 'call-arg-builtin';
+                diagnostics.push(diag);
+              }
+            }
+          }
           continue;
         }
 
@@ -1135,6 +1231,11 @@ export class CallArgumentInspector implements vscode.Disposable {
             GENERIC_VARIABLE_NAMES.has(terminalProp);
 
           let inferredType = ContextResolver.inferVariableType(document, receiver, lineIdx, this.indexer);
+          // For chained self properties (e.g. self.box_state.Tn_data), do two-level inference:
+          // first infer box_state → BoxState, then find self.Tn_data = {} → dict
+          if (!inferredType && rawProp.includes('.')) {
+            inferredType = ContextResolver.inferChainedPropertyType(document, rawProp, lineIdx, this.indexer);
+          }
           if (!inferredType && receiver.includes('.')) {
             inferredType = ContextResolver.inferSelfPropertyType(document, rawProp, lineIdx);
           }
@@ -1178,8 +1279,28 @@ export class CallArgumentInspector implements vscode.Disposable {
           }
 
           if (inferredType) {
-            // Built-in Python types (dict, list, etc.) have dynamic native methods; skip inspection
+            // Built-in Python types (dict, list, etc.): check against known method signatures
             if (['dict', 'list', 'set', 'tuple', 'str', 'bool', 'number'].includes(inferredType)) {
+              const sigKey = `${inferredType}.${methodName}`;
+              const builtinSig = PYTHON_BUILTIN_TYPE_METHOD_SIGS[sigKey];
+              if (builtinSig) {
+                // Check positional argument count against the builtin method signature
+                const posCount = callArgs.positionalCount;
+                if (posCount < builtinSig.min || posCount > builtinSig.max) {
+                  const rangeStr = builtinSig.min === builtinSig.max
+                    ? `${builtinSig.min}`
+                    : `${builtinSig.min}–${builtinSig.max}`;
+                  const diag = new vscode.Diagnostic(
+                    callArgs.argRange,
+                    `${inferredType}.${methodName}() takes ${rangeStr} argument(s), but ${posCount} were given`,
+                    vscode.DiagnosticSeverity.Error
+                  );
+                  diag.source = 'OmniNav';
+                  diag.code = 'call-arg-builtin';
+                  diagnostics.push(diag);
+                }
+              }
+              // Always skip further user-defined symbol inspection for built-in types
               continue;
             }
             const normInferred = inferredType.replace(/_/g, '').toLowerCase();
