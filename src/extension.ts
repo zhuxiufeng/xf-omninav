@@ -97,15 +97,41 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   // PyCharm-style Python parameter inlay hints, quick fixes, and Klipper hover cards
-  const pythonParamInlayHints = new PythonParamInlayHintsProvider(callArgumentInspector);
-  const callArgumentCodeActions = new CallArgumentCodeActionProvider(callArgumentInspector, indexer);
-  const klipperHoverProvider = new KlipperHoverProvider(indexer);
+  try {
+    const pythonParamInlayHints = new PythonParamInlayHintsProvider(callArgumentInspector);
+    if (typeof vscode.languages.registerInlayHintsProvider === 'function') {
+      context.subscriptions.push(
+        vscode.languages.registerInlayHintsProvider({ language: 'python' }, pythonParamInlayHints)
+      );
+    }
+  } catch (err) {
+    outputChannel.appendLine(`[XF OmniNav] InlayHints registration warning: ${err}`);
+  }
 
-  context.subscriptions.push(
-    vscode.languages.registerInlayHintsProvider({ language: 'python' }, pythonParamInlayHints),
-    vscode.languages.registerCodeActionProvider({ language: 'python' }, callArgumentCodeActions),
-    vscode.languages.registerHoverProvider({ language: 'python' }, klipperHoverProvider)
-  );
+  try {
+    const callArgumentCodeActions = new CallArgumentCodeActionProvider(callArgumentInspector, indexer);
+    const regCodeActions =
+      vscode.languages.registerCodeActionsProvider ||
+      (vscode.languages as any).registerCodeActionProvider;
+    if (typeof regCodeActions === 'function') {
+      context.subscriptions.push(
+        regCodeActions.call(vscode.languages, { language: 'python' }, callArgumentCodeActions)
+      );
+    }
+  } catch (err) {
+    outputChannel.appendLine(`[XF OmniNav] CodeActions registration warning: ${err}`);
+  }
+
+  try {
+    const klipperHoverProvider = new KlipperHoverProvider(indexer);
+    if (typeof vscode.languages.registerHoverProvider === 'function') {
+      context.subscriptions.push(
+        vscode.languages.registerHoverProvider({ language: 'python' }, klipperHoverProvider)
+      );
+    }
+  } catch (err) {
+    outputChannel.appendLine(`[XF OmniNav] HoverProvider registration warning: ${err}`);
+  }
 
   // 3. Fine-grained branch folding providers (Python, Shell, C/C++, TS/JS/Java/Go, Rust)
   let foldingDisposables: vscode.Disposable[] = [];

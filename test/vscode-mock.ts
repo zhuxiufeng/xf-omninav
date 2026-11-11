@@ -340,6 +340,7 @@ export const languages = {
   registerCodeLensProvider: () => ({ dispose: () => {} }),
   registerInlayHintsProvider: () => ({ dispose: () => {} }),
   registerHoverProvider: () => ({ dispose: () => {} }),
+  registerCodeActionsProvider: () => ({ dispose: () => {} }),
   registerCodeActionProvider: () => ({ dispose: () => {} }),
   registerFoldingRangeProvider: () => ({ dispose: () => {} }),
 };

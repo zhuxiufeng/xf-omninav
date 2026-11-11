@@ -2,7 +2,7 @@
   "name": "xf-omninav",
   "displayName": "XF OmniNav",
   "description": "PyCharm-style silky-smooth omni symbol navigation, class & method inheritance hierarchy, gutter markers & 1-click CodeLens.",
-  "version": "1.0.31",
+  "version": "1.0.32",
   "publisher": "Vivian",
   "icon": "resources/icon.png",
   "repository": {
@@ -33,6 +33,13 @@
   "main": "./dist/extension.js",
   "activationEvents": [
     "onStartupFinished",
+    "onCommand:xfOmniNav.navigate",
+    "onCommand:xfOmniNav.navigateBack",
+    "onCommand:xfOmniNav.jumpToParent",
+    "onCommand:xfOmniNav.jumpToChild",
+    "onCommand:xfOmniNav.jumpToLocation",
+    "onCommand:xfOmniNav.showTargetsQuickPick",
+    "onCommand:xfOmniNav.rebuildIndex",
     "onLanguage:python",
     "onLanguage:typescript",
     "onLanguage:javascript",
