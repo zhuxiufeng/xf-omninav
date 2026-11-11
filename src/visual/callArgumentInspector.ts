@@ -977,8 +977,34 @@ export class CallArgumentInspector implements vscode.Disposable {
       let match: RegExpExecArray | null;
 
       while ((match = callRegex.exec(line)) !== null) {
-        const receiver = match[1];
+        let receiver = match[1];
         const methodName = match[2];
+
+        // If no direct receiver matched, check if the call is preceded by a dot:
+        // e.g. config.get_printer().lookup_object(...) or printer.lookup_object('pins').register_chip(...)
+        if (!receiver) {
+          const beforeMatch = line.slice(0, match.index).trimEnd();
+          if (beforeMatch.endsWith('.')) {
+            const exprBefore = beforeMatch.slice(0, -1).trimEnd();
+            // 1. Chained lookup_object('component') or get_service('component')
+            const lookupMatch = exprBefore.match(/(?:lookup_object|load_object|get_service|get_component|resolve)\s*\(\s*['"]([A-Za-z0-9_]+)['"]/);
+            if (lookupMatch) {
+              receiver = lookupMatch[1];
+            } else {
+              // 2. Chained getter: e.g. get_printer()
+              const getterMatch = exprBefore.match(/(?:get_|load_)([A-Za-z0-9_]+)\s*\(/);
+              if (getterMatch) {
+                receiver = getterMatch[1];
+              } else {
+                // 3. Subscript or call terminal: e.g. self.heaters[name] or obj.method()
+                const termMatch = exprBefore.match(/([A-Za-z0-9_]+)(?:\[.*?\]|\(.*?\))?$/);
+                if (termMatch) {
+                  receiver = termMatch[1];
+                }
+              }
+            }
+          }
+        }
 
         // Skip Python built-ins or polymorphic calls without receiver
         if (!receiver && (PYTHON_BUILTINS.has(methodName) || this.isPolymorphicMethod(methodName))) {
@@ -1003,8 +1029,11 @@ export class CallArgumentInspector implements vscode.Disposable {
 
         // Intra-class prioritization: if receiver is 'self'/'cls' and we are inside a class
         if ((receiver === 'self' || receiver === 'cls') && currentClassName) {
+          const superClasses = this.indexer.getSuperClasses(currentClassName).map((c) => c.toLowerCase());
           const classSpecific = candidateDefs.filter(
-            (d) => d.containerName === currentClassName
+            (d) =>
+              d.containerName === currentClassName ||
+              (d.containerName && superClasses.includes(d.containerName.toLowerCase()))
           );
           if (classSpecific.length > 0) {
             candidateDefs = classSpecific;
@@ -1044,6 +1073,7 @@ export class CallArgumentInspector implements vscode.Disposable {
               return (
                 cont === cleanRaw ||
                 cont === cleanTerminal ||
+                (cont && (cont.endsWith(cleanRaw) || cont.endsWith(cleanTerminal))) ||
                 pth.includes(cleanRaw) ||
                 pth.includes(cleanTerminal)
               );
@@ -1060,11 +1090,16 @@ export class CallArgumentInspector implements vscode.Disposable {
               continue;
             }
             const normInferred = inferredType.replace(/_/g, '').toLowerCase();
+            const superClasses = this.indexer.getSuperClasses(inferredType).map((c) => c.replace(/_/g, '').toLowerCase());
+            const allowedContainers = new Set([normInferred, `${normInferred}action`, ...superClasses]);
             const matchingDefs = candidateDefs.filter(
-              (d) =>
-                d.containerName?.replace(/_/g, '').toLowerCase() === normInferred ||
-                d.containerName?.replace(/_/g, '').toLowerCase() === `${normInferred}action` ||
-                d.uri.fsPath.replace(/_/g, '').toLowerCase().includes(normInferred)
+              (d) => {
+                const cont = d.containerName?.replace(/_/g, '').toLowerCase();
+                return (
+                  (cont && allowedContainers.has(cont)) ||
+                  d.uri.fsPath.replace(/_/g, '').toLowerCase().includes(normInferred)
+                );
+              }
             );
             if (matchingDefs.length > 0) {
               candidateDefs = matchingDefs;
@@ -1132,10 +1167,13 @@ export class CallArgumentInspector implements vscode.Disposable {
         });
 
         // Detect if explicit `self` or `cls` argument is passed as the first positional argument
-        // (common in base class calls like BoxActionBase.func(self, ...))
+        // (common in base class calls like BoxActionBase.func(self, ...) or ClassName.func(instance, ...))
         const firstItem = callArgs.items.length > 0 ? callArgs.items[0] : undefined;
+        const isClassReceiver = Boolean(receiver && /^[A-Z]/.test(receiver));
         const hasExplicitSelf = Boolean(
-          firstItem && !firstItem.isKeyword && (firstItem.text === 'self' || firstItem.text === 'cls')
+          firstItem &&
+          !firstItem.isKeyword &&
+          (firstItem.text === 'self' || firstItem.text === 'cls' || isClassReceiver)
         );
         const effectivePositionalCount = hasExplicitSelf
           ? Math.max(0, callArgs.positionalCount - 1)

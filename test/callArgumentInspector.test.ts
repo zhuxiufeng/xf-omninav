@@ -791,6 +791,85 @@ class Worker {
     assert.ok(tooManyDiag.message.includes('实际传入了 4 个'));
   });
 
+  await t.test('Inheritance: should detect excess arguments on inherited method from base class', async () => {
+    const parentDoc = new (vscode as any).MockTextDocument(
+      `class BaseDevice:
+    def execute_command(self, cmd, timeout=10):
+        pass
+`,
+      '/workspace/devices/base_device.py',
+      'python'
+    );
+    await indexer.indexDocument(parentDoc);
+
+    const childDoc = new (vscode as any).MockTextDocument(
+      `class CustomDevice(BaseDevice):
+    pass
+`,
+      '/workspace/devices/custom_device.py',
+      'python'
+    );
+    await indexer.indexDocument(childDoc);
+
+    const callerDoc = new (vscode as any).MockTextDocument(
+      `def run_test():
+    dev = CustomDevice()
+    dev.execute_command("START", 5, "EXTRA1", "EXTRA2")
+`,
+      '/workspace/test_runner.py',
+      'python'
+    );
+    await indexer.indexDocument(callerDoc);
+
+    const diags = inspector.inspectDocument(callerDoc);
+    const excessDiag = diags.find((d) => d.code === 'too-many-arguments');
+    assert.ok(excessDiag, 'Should flag too-many-arguments on inherited BaseDevice method call');
+    assert.ok(excessDiag.message.includes('execute_command'));
+    assert.ok(excessDiag.message.includes('最多接收 2 个位置参数'));
+  });
+
+  await t.test('Chained expression call: should extract receiver from lookup_object expression', async () => {
+    const pinsDoc = new (vscode as any).MockTextDocument(
+      `class PrinterPins:
+    def register_chip(self, chip_name, chip_obj):
+        pass
+`,
+      '/workspace/pins.py',
+      'python'
+    );
+    await indexer.indexDocument(pinsDoc);
+
+    const callerDoc = new (vscode as any).MockTextDocument(
+      `def setup_pins(printer):
+    printer.lookup_object('pins').register_chip("mcu", self, 123, 456)
+`,
+      '/workspace/mcu_init.py',
+      'python'
+    );
+    await indexer.indexDocument(callerDoc);
+
+    const diags = inspector.inspectDocument(callerDoc);
+    const excessDiag = diags.find((d) => d.code === 'too-many-arguments');
+    assert.ok(excessDiag, 'Should flag too-many-arguments on chained lookup_object expression call');
+    assert.ok(excessDiag.message.includes('register_chip'));
+  });
+
+  await t.test('ContextResolver: should infer leading parameter annotation and getter pattern', () => {
+    const doc = new (vscode as any).MockTextDocument(
+      `def handle(event: Event):
+    p = config.get_printer()
+    pass
+`,
+      '/workspace/test.py',
+      'python'
+    );
+    const eventType = ContextResolver.inferVariableType(doc, 'event', 2);
+    assert.equal(eventType, 'Event', 'Should infer leading parameter event: Event');
+
+    const printerType = ContextResolver.inferVariableType(doc, 'p', 3);
+    assert.equal(printerType, 'Printer', 'Should infer p from config.get_printer()');
+  });
+
   await t.test('OmniStatusBar: should format symbol count and indexing status cleanly', async () => {
     const statusBar = new OmniStatusBar(indexer);
     statusBar.update();

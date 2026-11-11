@@ -286,12 +286,14 @@ export class ContextResolver {
   ): string | undefined {
     const escaped = varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const patterns = [
-      // const x = new Dog(...) or x = Dog(...) or x = module.Dog(...)
-      new RegExp(`(?:const|let|var\\s+)?${escaped}\\s*=\\s*(?:new\\s+)?(?:[A-Za-z0-9_]+\\.)?([A-Z][A-Za-z0-9_]*)\\s*\\(`),
+      // const x = new Dog(...) or x = Dog(...) or x = module.sub.Dog(...)
+      new RegExp(`(?:const|let|var\\s+)?${escaped}\\s*=\\s*(?:new\\s+)?(?:[A-Za-z0-9_]+\\.)*([A-Z][A-Za-z0-9_]*)\\s*\\(`),
       // x: Dog = ... or x: Optional[Dog] = ... or x: Union[Dog, None] = ...
       new RegExp(`(?:const|let|var\\s+)?${escaped}\\s*:\\s*(?:Optional\\[|Union\\[)?([A-Z][A-Za-z0-9_]*)\\b`),
-      // def func(x: Dog): or def func(x: Optional[Dog]):
-      new RegExp(`(?:def|function)\\s+[A-Za-z0-9_]+\\s*\\(.*?[\\s,]${escaped}\\s*:\\s*(?:Optional\\[)?([A-Z][A-Za-z0-9_]*)`),
+      // def func(x: Dog): or def func(self, x: Optional[Dog]):
+      new RegExp(`(?:def|function)\\s+[A-Za-z0-9_]+\\s*\\(.*?[(\\s,]${escaped}\\s*:\\s*(?:Optional\\[|Union\\[)?([A-Z][A-Za-z0-9_]*)`),
+      // Multiline parameter annotation: x: Dog,
+      new RegExp(`^[\\s,]*${escaped}\\s*:\\s*(?:Optional\\[|Union\\[)?([A-Z][A-Za-z0-9_]*)\\b`),
       // (x as Dog)
       new RegExp(`\\(${escaped}\\s+as\\s+([A-Z][A-Za-z0-9_]*)\\)`),
       // Generic service locator / component factory: x = get_service('auth') or lookup_object('nozzle') or get_component('...')
@@ -340,6 +342,12 @@ export class ContextResolver {
           }
           return match[1];
         }
+      }
+
+      // Component getter: x = config.get_printer() or x = self.printer.get_reactor()
+      const getterMatch = line.match(new RegExp(`${escaped}\\s*=\\s*.*?(?:get_|load_)([a-z0-9_]+)\\s*\\(\\s*\\)`));
+      if (getterMatch && getterMatch[1]) {
+        return ContextResolver.snakeToPascal(getterMatch[1]);
       }
 
       // Return type inference: var = callee(...)
@@ -393,10 +401,16 @@ export class ContextResolver {
       `(?:self|this)\\.${escaped}\\s*=\\s*.*?(?:lookup_object|load_object|get_service|get_component|resolve|get_instance|get_client|create_client)\\s*\\(\\s*['"]([A-Za-z0-9_]+)['"]`
     );
 
+    // 1.5 Match component getter pattern:
+    // e.g. self.printer = config.get_printer() or self.reactor = self.printer.get_reactor()
+    const getterRegex = new RegExp(
+      `(?:self|this)\\.${escaped}\\s*=\\s*.*?(?:get_|load_)([a-z0-9_]+)\\s*\\(\\s*\\)`
+    );
+
     // 2. Match direct class instantiation:
     // e.g. self.prop = ClassName(...) or self.prop = module.ClassName(...)
     const classRegex = new RegExp(
-      `(?:self|this)\\.${escaped}\\s*=\\s*(?:[A-Za-z0-9_]+\\.)?([A-Z][A-Za-z0-9_]*)\\s*\\(`
+      `(?:self|this)\\.${escaped}\\s*=\\s*(?:[A-Za-z0-9_]+\\.)*([A-Z][A-Za-z0-9_]*)\\s*\\(`
     );
 
     const totalLines = typeof document.lineCount === 'number' ? document.lineCount : 5000;
@@ -409,6 +423,10 @@ export class ContextResolver {
       const mLookup = line.match(lookupRegex);
       if (mLookup && mLookup[1]) {
         return mLookup[1];
+      }
+      const mGetter = line.match(getterRegex);
+      if (mGetter && mGetter[1]) {
+        return mGetter[1];
       }
       const mClass = line.match(classRegex);
       if (mClass && mClass[1]) {
