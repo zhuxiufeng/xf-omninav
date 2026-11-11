@@ -35,14 +35,14 @@ export class InspectionSubsystem implements vscode.Disposable {
       vscode.window.registerFileDecorationProvider(this.fileErrorDecorator)
     );
 
-    // 2. Python Parameter Inlay Hints
+    // 2. Parameter Inlay Hints (Python, TypeScript, JavaScript)
     try {
-      const pythonParamInlayHints = new PythonParamInlayHintsProvider(this.inspector);
+      const paramInlayHints = new PythonParamInlayHintsProvider(this.inspector);
       if (typeof vscode.languages.registerInlayHintsProvider === 'function') {
         context.subscriptions.push(
           vscode.languages.registerInlayHintsProvider(
-            { language: 'python' },
-            pythonParamInlayHints
+            [{ language: 'python' }, { language: 'typescript' }, { language: 'javascript' }],
+            paramInlayHints
           )
         );
       }
@@ -50,7 +50,7 @@ export class InspectionSubsystem implements vscode.Disposable {
       outputChannel.appendLine(`[XF OmniNav] InlayHints registration warning: ${err}`);
     }
 
-    // 3. QuickFix Code Actions
+    // 3. QuickFix Code Actions (Python, TypeScript, JavaScript)
     try {
       const callArgumentCodeActions = new CallArgumentCodeActionProvider(
         this.inspector,
@@ -61,20 +61,24 @@ export class InspectionSubsystem implements vscode.Disposable {
         (vscode.languages as any).registerCodeActionProvider;
       if (typeof regCodeActions === 'function') {
         context.subscriptions.push(
-          regCodeActions.call(vscode.languages, { language: 'python' }, callArgumentCodeActions)
+          regCodeActions.call(
+            vscode.languages,
+            [{ language: 'python' }, { language: 'typescript' }, { language: 'javascript' }],
+            callArgumentCodeActions
+          )
         );
       }
     } catch (err) {
       outputChannel.appendLine(`[XF OmniNav] CodeActions registration warning: ${err}`);
     }
 
-    // 4. Dynamic Type Hover Provider (Python & TypeScript)
+    // 4. Dynamic Type Hover Provider (Python, TypeScript, JavaScript)
     try {
       const dynamicHoverProvider = new DynamicTypeHoverProvider(this.indexer);
       if (typeof vscode.languages.registerHoverProvider === 'function') {
         context.subscriptions.push(
           vscode.languages.registerHoverProvider(
-            [{ language: 'python' }, { language: 'typescript' }],
+            [{ language: 'python' }, { language: 'typescript' }, { language: 'javascript' }],
             dynamicHoverProvider
           )
         );

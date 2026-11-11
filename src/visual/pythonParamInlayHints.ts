@@ -3,10 +3,10 @@ import { CallArgumentInspector } from './callArgumentInspector';
 import { getOmniConfig } from '../utils';
 
 /**
- * PyCharm-style inline parameter name hints for Python calls.
- * Displays parameter labels like `nozzle_num: ` before arguments in Python calls.
+ * PyCharm-style inline parameter name hints for Python & TypeScript/JavaScript calls.
+ * Displays parameter labels like `nozzle_num: ` before arguments in calls.
  */
-export class PythonParamInlayHintsProvider implements vscode.InlayHintsProvider {
+export class ParamInlayHintsProvider implements vscode.InlayHintsProvider {
   private _onDidChangeInlayHints = new vscode.EventEmitter<void>();
   public readonly onDidChangeInlayHints = this._onDidChangeInlayHints.event;
 
@@ -21,7 +21,13 @@ export class PythonParamInlayHintsProvider implements vscode.InlayHintsProvider 
     range: vscode.Range,
     _token: vscode.CancellationToken
   ): vscode.InlayHint[] {
-    if (document.languageId !== 'python') return [];
+    if (
+      document.languageId !== 'python' &&
+      document.languageId !== 'typescript' &&
+      document.languageId !== 'javascript'
+    ) {
+      return [];
+    }
     const isEnabled = getOmniConfig<boolean>('enableParameterInlayHints', true);
     if (!isEnabled) return [];
 
@@ -58,9 +64,22 @@ export class PythonParamInlayHintsProvider implements vscode.InlayHintsProvider 
             );
             const tooltip = new vscode.MarkdownString();
             tooltip.isTrusted = true;
-            tooltip.appendMarkdown(`**形参**: \`${param.name}\`${param.hasDefault ? ' *(可选参数/带默认值)*' : ' *(必填参数)*'}\n\n`);
+            const typeStr = param.type ? `: ${param.type}` : '';
+            const statusStr = param.hasDefault
+              ? ' *(可选参数/带默认值)*'
+              : param.isKeywordOnly
+              ? ' *(仅关键字参数)*'
+              : ' *(必填参数)*';
+
+            tooltip.appendMarkdown(`**形参**: \`${param.name}${typeStr}\`${statusStr}\n\n`);
             tooltip.appendMarkdown(`- **方法/函数**: \`${call.methodName}\`\n`);
             tooltip.appendMarkdown(`- **参数序号**: 第 ${i + 1} 个参数\n`);
+            if (param.defaultValue) {
+              tooltip.appendMarkdown(`- **默认值**: \`${param.defaultValue}\`\n`);
+            }
+            if (param.description) {
+              tooltip.appendMarkdown(`- **说明**: ${param.description}\n`);
+            }
             if (sig.name) {
               tooltip.appendMarkdown(`- **签名**: \`${sig.name}\`\n`);
             }
@@ -75,3 +94,6 @@ export class PythonParamInlayHintsProvider implements vscode.InlayHintsProvider 
     return hints;
   }
 }
+
+/** Backward-compatible alias for existing imports */
+export const PythonParamInlayHintsProvider = ParamInlayHintsProvider;

@@ -490,7 +490,84 @@ test('CallArgumentInspector tests', async (t) => {
     assert.equal(tsSig?.maxPositional, Infinity, 'has rest params');
     assert.equal(tsSig?.hasVarargs, true);
     assert.equal(tsSig?.params[0].name, 'total');
+    assert.equal(tsSig?.params[0].type, 'number');
     assert.equal(tsSig?.params[1].name, 'tax');
+    assert.equal(tsSig?.params[1].type, 'number');
+    assert.equal(tsSig?.params[1].defaultValue, '0');
+  });
+
+  await t.test('extractDocstringParams: should extract parameter types and descriptions from Sphinx, Google, and JSDoc docstrings', () => {
+    const sphinxDoc = `
+    Connect to host.
+    :param str host: Target hostname or IP
+    :param int port: Target port number
+    :type timeout: float
+    :param timeout: Connection timeout in seconds
+    `;
+    const sphinxMap = inspector.extractDocstringParams(sphinxDoc);
+    assert.equal(sphinxMap.get('host')?.type, 'str');
+    assert.equal(sphinxMap.get('host')?.description, 'Target hostname or IP');
+    assert.equal(sphinxMap.get('port')?.type, 'int');
+    assert.equal(sphinxMap.get('timeout')?.type, 'float');
+    assert.equal(sphinxMap.get('timeout')?.description, 'Connection timeout in seconds');
+
+    const googleDoc = `
+    Run task.
+    Args:
+        task_id (str): Unique task identifier
+        max_retries (int): Maximum retry attempts
+    `;
+    const googleMap = inspector.extractDocstringParams(googleDoc);
+    assert.equal(googleMap.get('task_id')?.type, 'str');
+    assert.equal(googleMap.get('task_id')?.description, 'Unique task identifier');
+    assert.equal(googleMap.get('max_retries')?.type, 'int');
+
+    const jsDoc = `
+    /**
+     * @param {string} user - User name
+     * @param {number} [retries=3] - Number of retries
+     */
+    `;
+    const jsMap = inspector.extractDocstringParams(jsDoc);
+    assert.equal(jsMap.get('user')?.type, 'string');
+    assert.equal(jsMap.get('user')?.description, 'User name');
+    assert.equal(jsMap.get('retries')?.type, 'number');
+  });
+
+  await t.test('SymbolIndexer: should preserve isAbstract across saveToDiskCache and loadFromDiskCache', async () => {
+    const testIndexer = new SymbolIndexer();
+    const testDoc = new (vscode as any).MockTextDocument(
+      `from abc import ABC, abstractmethod
+class AbstractWorker(ABC):
+    @abstractmethod
+    def run_work(self):
+        pass
+`,
+      '/workspace/abstract_test.py',
+      'python'
+    );
+    await testIndexer.indexDocument(testDoc);
+    const methodsBefore = testIndexer.getMethodsInClass('AbstractWorker');
+    assert.equal(methodsBefore.length, 1);
+    assert.equal(methodsBefore[0].isAbstract, true);
+
+    const cacheFile = '/tmp/test_omninav_cache.json';
+    const saved = await testIndexer.saveToDiskCache(cacheFile);
+    assert.ok(saved);
+
+    const reloadedIndexer = new SymbolIndexer();
+    const loaded = await reloadedIndexer.loadFromDiskCache(cacheFile);
+    assert.ok(loaded);
+
+    const methodsAfter = reloadedIndexer.getMethodsInClass('AbstractWorker');
+    assert.equal(methodsAfter.length, 1);
+    assert.equal(methodsAfter[0].isAbstract, true, 'isAbstract must be restored after loading cache');
+
+    try {
+      require('fs').unlinkSync(cacheFile);
+    } catch {}
+    testIndexer.dispose();
+    reloadedIndexer.dispose();
   });
 
   await t.test('OmniStatusBar: should format symbol count and indexing status cleanly', async () => {

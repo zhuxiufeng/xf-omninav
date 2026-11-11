@@ -10,6 +10,9 @@ export interface ParamSpec {
   isVararg: boolean; // *args
   isVarkwarg: boolean; // **kwargs
   isKeywordOnly: boolean;
+  type?: string;
+  defaultValue?: string;
+  description?: string;
 }
 
 export interface FunctionSignatureInfo {
@@ -347,12 +350,29 @@ export class CallArgumentInspector implements vscode.Disposable {
       const name = p.split(/[:?=]/)[0].trim().replace(/^public\s+|^private\s+|^protected\s+|^readonly\s+/, '');
       if (name === 'this') continue;
 
+      let type: string | undefined = undefined;
+      let defaultValue: string | undefined = undefined;
+      const colonIdx = p.indexOf(':');
+      const eqIdx = p.indexOf('=');
+      if (colonIdx !== -1) {
+        if (eqIdx !== -1 && eqIdx > colonIdx) {
+          type = p.slice(colonIdx + 1, eqIdx).trim();
+          defaultValue = p.slice(eqIdx + 1).trim();
+        } else {
+          type = p.slice(colonIdx + 1).trim();
+        }
+      } else if (eqIdx !== -1) {
+        defaultValue = p.slice(eqIdx + 1).trim();
+      }
+
       positionalParams.push({
         name,
         hasDefault,
         isVararg: false,
         isVarkwarg: false,
         isKeywordOnly: false,
+        type,
+        defaultValue,
       });
     }
 
@@ -453,12 +473,30 @@ export class CallArgumentInspector implements vscode.Disposable {
 
       const hasDefault = p.includes('=');
       const name = p.split(/[:=]/)[0].trim();
+
+      let type: string | undefined = undefined;
+      let defaultValue: string | undefined = undefined;
+      const colonIdx = p.indexOf(':');
+      const eqIdx = p.indexOf('=');
+      if (colonIdx !== -1) {
+        if (eqIdx !== -1 && eqIdx > colonIdx) {
+          type = p.slice(colonIdx + 1, eqIdx).trim();
+          defaultValue = p.slice(eqIdx + 1).trim();
+        } else {
+          type = p.slice(colonIdx + 1).trim();
+        }
+      } else if (eqIdx !== -1) {
+        defaultValue = p.slice(eqIdx + 1).trim();
+      }
+
       const spec: ParamSpec = {
         name,
         hasDefault,
         isVararg: false,
         isVarkwarg: false,
         isKeywordOnly: isKwOnly,
+        type,
+        defaultValue,
       };
 
       if (isKwOnly) {
@@ -497,6 +535,94 @@ export class CallArgumentInspector implements vscode.Disposable {
     }
     this.sigCache.set(cacheKey, info);
     return info;
+  }
+
+  /**
+   * Extract parameter descriptions and types from Python / JSDoc / Sphinx docstrings.
+   */
+  public extractDocstringParams(
+    docstring: string
+  ): Map<string, { type?: string; description?: string }> {
+    const result = new Map<string, { type?: string; description?: string }>();
+    if (!docstring) return result;
+
+    // 1. Sphinx/Epydoc style: :param [type] name: description or :type name: type
+    const sphinxParamRegex =
+      /:param\s+(?:([A-Za-z0-9_\[\], ]+)\s+)?([A-Za-z0-9_]+)\s*:\s*([^\n\r]+)/g;
+    let m: RegExpExecArray | null;
+    while ((m = sphinxParamRegex.exec(docstring)) !== null) {
+      const type = m[1]?.trim();
+      const name = m[2]?.trim();
+      const desc = m[3]?.trim();
+      if (name) {
+        result.set(name, { type: type || undefined, description: desc || undefined });
+      }
+    }
+
+    const sphinxTypeRegex = /:type\s+([A-Za-z0-9_]+)\s*:\s*([^\n\r]+)/g;
+    while ((m = sphinxTypeRegex.exec(docstring)) !== null) {
+      const name = m[1]?.trim();
+      const type = m[2]?.trim();
+      if (name) {
+        const existing = result.get(name) || {};
+        existing.type = type;
+        result.set(name, existing);
+      }
+    }
+
+    // 2. JSDoc style: @param {type} [name] description
+    const jsdocRegex =
+      /@param\s+(?:\{([^}]+)\}\s+)?(?:\[?([A-Za-z0-9_]+)(?:=[^\]]+)?\]?)\s*(?:-\s*)?([^\n\r]*)/g;
+    while ((m = jsdocRegex.exec(docstring)) !== null) {
+      const type = m[1]?.trim();
+      const name = m[2]?.trim();
+      const desc = m[3]?.trim();
+      if (name && !result.has(name)) {
+        result.set(name, { type: type || undefined, description: desc || undefined });
+      }
+    }
+
+    // 3. Google/NumPy style: Args:\n  name (type): description
+    const googleArgsMatch = docstring.match(
+      /(?:Args|Parameters|Arguments):\s*([\s\S]+?)(?:\n\s*\n|[A-Z][a-z]+:|$)/
+    );
+    if (googleArgsMatch && googleArgsMatch[1]) {
+      const lines = googleArgsMatch[1].split(/\r?\n/);
+      for (const line of lines) {
+        const lineMatch = line.match(/^\s*([A-Za-z0-9_]+)(?:\s*\(([^)]+)\))?\s*:\s*(.+)$/);
+        if (lineMatch) {
+          const name = lineMatch[1].trim();
+          const type = lineMatch[2]?.trim();
+          const desc = lineMatch[3]?.trim();
+          if (name && !result.has(name)) {
+            result.set(name, { type: type || undefined, description: desc || undefined });
+          }
+        }
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Enrich parameter specifications with docstring types and descriptions.
+   */
+  public enrichParamsWithDocstring(params: ParamSpec[], docstring?: string): void {
+    if (!docstring) return;
+    const docMap = this.extractDocstringParams(docstring);
+    if (docMap.size === 0) return;
+
+    for (const p of params) {
+      const docInfo = docMap.get(p.name);
+      if (docInfo) {
+        if (!p.type && docInfo.type) {
+          p.type = docInfo.type;
+        }
+        if (!p.description && docInfo.description) {
+          p.description = docInfo.description;
+        }
+      }
+    }
   }
 
   /**
@@ -909,6 +1035,12 @@ export class CallArgumentInspector implements vscode.Disposable {
             ? this.parsePythonSignature(def.signature, isMethod, Boolean(def.isStatic))
             : this.parseTypeScriptSignature(def.signature);
           if (sigInfo) {
+            if (def.docstring) {
+              this.enrichParamsWithDocstring(sigInfo.params, def.docstring);
+              if (sigInfo.keywordOnlyParams) {
+                this.enrichParamsWithDocstring(sigInfo.keywordOnlyParams, def.docstring);
+              }
+            }
             sigInfos.push(sigInfo);
           }
         }

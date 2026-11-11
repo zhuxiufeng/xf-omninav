@@ -802,6 +802,7 @@ export class SymbolIndexer implements vscode.Disposable {
               parentContainers: d.p,
               docstring: d.doc,
               isExported: d.exp,
+              isAbstract: d.abs === 1,
             })
         );
         this.storeDefinitions(uriStr, defs);
@@ -852,6 +853,7 @@ export class SymbolIndexer implements vscode.Disposable {
           rel: d.fileRelativePath,
           exp: d.isExported,
           doc: d.docstring,
+          abs: d.isAbstract ? 1 : undefined,
         }));
         serializedFiles.push([uriStr, fileDefs]);
       }
