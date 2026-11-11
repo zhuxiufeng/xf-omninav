@@ -253,7 +253,7 @@ export class SymbolParser {
             : 'function';
 
           // Extract full multiline signature up to header colon ':'
-          let fullSig = trimmed;
+          let fullSig = trimmed.replace(/#.*$/, '').trim();
           let sigEndLine = i;
           let parenDepth = 0;
           let seenOpenParen = false;
@@ -271,7 +271,10 @@ export class SymbolParser {
               }
             }
             if (l > i) {
-              fullSig += ' ' + lText.trim();
+              const cleanPart = lText.replace(/#.*$/, '').trim();
+              if (cleanPart) {
+                fullSig += ' ' + cleanPart;
+              }
             }
             if (seenOpenParen && parenDepth <= 0 && lText.includes(':')) {
               sigEndLine = l;

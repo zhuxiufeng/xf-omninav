@@ -1046,6 +1046,96 @@ def configure(options={}):
     assert.ok(timeoutItem.insertText?.value.includes('timeout='), 'Should use snippet insertText');
   });
 
+  await t.test('parsePythonSignature: should parse default lambda and dict without misidentifying type', () => {
+    const sig = inspector.parsePythonSignature(
+      "def process(val, cb=lambda x: x + 1, opts={'mode': 1}):",
+      false
+    );
+    assert.ok(sig);
+    assert.equal(sig.params.length, 3);
+    assert.equal(sig.params[1].name, 'cb');
+    assert.equal(sig.params[1].type, undefined);
+    assert.equal(sig.params[1].defaultValue, 'lambda x: x + 1');
+    assert.equal(sig.params[2].name, 'opts');
+    assert.equal(sig.params[2].type, undefined);
+    assert.equal(sig.params[2].defaultValue, "{'mode': 1}");
+  });
+
+  await t.test('parsePythonSignature: should parse string parameter containing comma (sep=", ") without splitting', () => {
+    const sig = inspector.parsePythonSignature(
+      'def join_words(words, sep=", ", end="\\n"):',
+      false
+    );
+    assert.ok(sig);
+    assert.equal(sig.params.length, 3);
+    assert.equal(sig.params[0].name, 'words');
+    assert.equal(sig.params[1].name, 'sep');
+    assert.equal(sig.params[1].defaultValue, '", "');
+    assert.equal(sig.params[2].name, 'end');
+    assert.equal(sig.params[2].defaultValue, '"\\n"');
+  });
+
+  await t.test('inspectDocument: MathUtil.add(1, 2) on static method should NOT have excess or missing arguments', async () => {
+    const defDoc = new (vscode as any).MockTextDocument(
+      `class MathUtil:
+    @staticmethod
+    def add(a: int, b: int) -> int:
+        return a + b
+`,
+      '/workspace/math_util.py',
+      'python'
+    );
+    await indexer.indexDocument(defDoc);
+
+    const callerDoc = new (vscode as any).MockTextDocument(
+      `def calculate():
+    val = MathUtil.add(1, 2)
+    bad = MathUtil.add(1, 2, 3)
+`,
+      '/workspace/math_caller.py',
+      'python'
+    );
+
+    const diagnostics = inspector.inspectDocument(callerDoc);
+    assert.equal(diagnostics.length, 1, 'Should only flag bad call with 3 arguments, valid call with 2 args should be accepted');
+    assert.ok(diagnostics[0].message.includes('最多接收 2 个位置参数'));
+    assert.ok(diagnostics[0].message.includes('实际传入了 3 个'));
+  });
+
+  await t.test('parseCallArguments: should handle triple quotes with inner quotes, commas, comments, and parens', () => {
+    const lines = [
+      'val = process("""first line, with comma',
+      '# not a comment, and ) paren',
+      'third line \'quoted\'""", timeout=30)',
+    ];
+    const doc = new (vscode as any).MockTextDocument(lines.join('\n'), '/workspace/call.py', 'python');
+    const openParenChar = lines[0].indexOf('(');
+    const parsed = inspector.parseCallArguments(doc, 0, openParenChar, (l) => lines[l]);
+    assert.ok(parsed, 'Should parse multiline call with triple-quoted string');
+    assert.equal(parsed.positionalCount, 1, 'Should have exactly 1 positional argument (the triple-quoted string)');
+    assert.equal(parsed.keywords.length, 1, 'Should have exactly 1 keyword argument');
+    assert.equal(parsed.keywords[0], 'timeout');
+  });
+
+  await t.test('SymbolParser: should strip inline comments with parentheses when parsing signatures', () => {
+    const pyCode = `def calculate(a, # comment (note)
+              b):
+    return a + b
+`;
+    const doc = new (vscode as any).MockTextDocument(pyCode, '/workspace/calc.py', 'python');
+    const symbols = SymbolParser.parseText(pyCode, doc.uri, 'python');
+    const fn = symbols.find((s) => s.name === 'calculate');
+    assert.ok(fn, 'Should find calculate function');
+    assert.ok(fn.signature);
+    assert.ok(!fn.signature.includes('#'), 'Signature should not contain inline comment');
+    assert.ok(!fn.signature.includes('note'), 'Signature should not contain comment text');
+    const parsedSig = inspector.parsePythonSignature(fn.signature, false);
+    assert.ok(parsedSig);
+    assert.equal(parsedSig.params.length, 2);
+    assert.equal(parsedSig.params[0].name, 'a');
+    assert.equal(parsedSig.params[1].name, 'b');
+  });
+
   await t.test('OmniStatusBar: should format symbol count and indexing status cleanly', async () => {
     const statusBar = new OmniStatusBar(indexer);
     statusBar.update();

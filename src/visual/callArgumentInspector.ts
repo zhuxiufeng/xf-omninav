@@ -414,14 +414,15 @@ export class CallArgumentInspector implements vscode.Disposable {
       return this.sigCache.get(cacheKey) || null;
     }
 
-    const parenStart = signature.indexOf('(');
-    const parenEnd = signature.lastIndexOf(')');
+    const cleanSig = signature.replace(/#.*$/, '').trim();
+    const parenStart = cleanSig.indexOf('(');
+    const parenEnd = cleanSig.lastIndexOf(')');
     if (parenStart === -1 || parenEnd === -1 || parenEnd <= parenStart) {
       this.sigCache.set(cacheKey, null);
       return null;
     }
 
-    const rawParams = signature.slice(parenStart + 1, parenEnd).trim();
+    const rawParams = cleanSig.slice(parenStart + 1, parenEnd).trim();
     if (!rawParams) {
       const info: FunctionSignatureInfo = {
         name: '',
@@ -435,12 +436,23 @@ export class CallArgumentInspector implements vscode.Disposable {
       return info;
     }
 
-    // Split parameters by top-level comma
+    // Split parameters by top-level comma respecting quotes
     const params: string[] = [];
     let depth = 0;
+    let inQuote: string | null = null;
     let cur = '';
     for (let i = 0; i < rawParams.length; i++) {
       const ch = rawParams[i];
+      if (inQuote) {
+        if (ch === inQuote && (i === 0 || rawParams[i - 1] !== '\\')) inQuote = null;
+        cur += ch;
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        inQuote = ch;
+        cur += ch;
+        continue;
+      }
       if (ch === '(' || ch === '[' || ch === '{') depth++;
       else if (ch === ')' || ch === ']' || ch === '}') depth--;
       else if (ch === ',' && depth === 0) {
@@ -479,22 +491,24 @@ export class CallArgumentInspector implements vscode.Disposable {
         continue;
       }
 
-      const hasDefault = p.includes('=');
-      const name = p.split(/[:=]/)[0].trim();
-
+      const eqIdx = p.indexOf('=');
+      const hasDefault = eqIdx !== -1;
+      let name: string;
       let type: string | undefined = undefined;
       let defaultValue: string | undefined = undefined;
       const colonIdx = p.indexOf(':');
-      const eqIdx = p.indexOf('=');
-      if (colonIdx !== -1) {
-        if (eqIdx !== -1 && eqIdx > colonIdx) {
-          type = p.slice(colonIdx + 1, eqIdx).trim();
+
+      if (colonIdx !== -1 && (!hasDefault || colonIdx < eqIdx)) {
+        name = p.slice(0, colonIdx).trim();
+        type = hasDefault ? p.slice(colonIdx + 1, eqIdx).trim() : p.slice(colonIdx + 1).trim();
+        if (hasDefault) {
           defaultValue = p.slice(eqIdx + 1).trim();
-        } else {
-          type = p.slice(colonIdx + 1).trim();
         }
-      } else if (eqIdx !== -1) {
+      } else if (hasDefault) {
+        name = p.slice(0, eqIdx).trim();
         defaultValue = p.slice(eqIdx + 1).trim();
+      } else {
+        name = p.trim();
       }
 
       const spec: ParamSpec = {
@@ -651,6 +665,7 @@ export class CallArgumentInspector implements vscode.Disposable {
     let endLine = lineIdx;
     let endCol = openParenChar + 1;
     let inQuote: string | null = null;
+    let inTripleQuote: string | null = null;
     let foundEnd = false;
 
     const totalLines = typeof document.lineCount === 'number' ? document.lineCount : 100000;
@@ -679,9 +694,25 @@ export class CallArgumentInspector implements vscode.Disposable {
       if (line === undefined || line === null) break;
       for (let c = curCol; c < line.length; c++) {
         const ch = line[c];
+        if (inTripleQuote) {
+          if (line.startsWith(inTripleQuote, c) && !isEscaped(line, c)) {
+            argText += inTripleQuote;
+            c += 2;
+            inTripleQuote = null;
+          } else {
+            argText += ch;
+          }
+          continue;
+        }
         if (inQuote) {
           if (ch === inQuote && !isEscaped(line, c)) inQuote = null;
           argText += ch;
+          continue;
+        }
+        if (line.startsWith('"""', c) || line.startsWith("'''", c)) {
+          inTripleQuote = line.slice(c, c + 3);
+          argText += inTripleQuote;
+          c += 2;
           continue;
         }
         if (ch === '"' || ch === "'" || ch === '`') {
@@ -689,7 +720,7 @@ export class CallArgumentInspector implements vscode.Disposable {
           argText += ch;
           continue;
         }
-        if (ch === '#' && !inQuote) {
+        if (ch === '#') {
           break; // python comment
         }
         if (ch === '(' || ch === '[' || ch === '{') {
@@ -706,6 +737,9 @@ export class CallArgumentInspector implements vscode.Disposable {
         argText += ch;
       }
       if (foundEnd) break;
+      if (inQuote && !isEscaped(line, line.length - 1)) {
+        inQuote = null;
+      }
       argText += '\n';
       curLine++;
       curCol = 0;
@@ -745,13 +779,26 @@ export class CallArgumentInspector implements vscode.Disposable {
     const chunks: ChunkOffset[] = [];
     depth = 0;
     inQuote = null;
+    inTripleQuote = null;
     let chunkStart = 0;
     let lastCommaIdx = -1;
 
     for (let i = 0; i < argText.length; i++) {
       const ch = argText[i];
+      if (inTripleQuote) {
+        if (argText.startsWith(inTripleQuote, i) && !isEscaped(argText, i)) {
+          i += 2;
+          inTripleQuote = null;
+        }
+        continue;
+      }
       if (inQuote) {
         if (ch === inQuote && !isEscaped(argText, i)) inQuote = null;
+        continue;
+      }
+      if (argText.startsWith('"""', i) || argText.startsWith("'''", i)) {
+        inTripleQuote = argText.slice(i, i + 3);
+        i += 2;
         continue;
       }
       if (ch === '"' || ch === "'" || ch === '`') {
@@ -1205,10 +1252,13 @@ export class CallArgumentInspector implements vscode.Disposable {
         // (common in base class calls like BoxActionBase.func(self, ...) or ClassName.func(instance, ...))
         const firstItem = callArgs.items.length > 0 ? callArgs.items[0] : undefined;
         const isClassReceiver = Boolean(receiver && /^[A-Z]/.test(receiver));
+        const isUnboundInstanceMethod =
+          isClassReceiver &&
+          candidateDefs.some((d) => !d.isStatic && !d.isClassMethod && (d.kind === 'method' || Boolean(d.containerName)));
         const hasExplicitSelf = Boolean(
           firstItem &&
           !firstItem.isKeyword &&
-          (firstItem.text === 'self' || firstItem.text === 'cls' || isClassReceiver)
+          (firstItem.text === 'self' || firstItem.text === 'cls' || isUnboundInstanceMethod)
         );
         const effectivePositionalCount = hasExplicitSelf
           ? Math.max(0, callArgs.positionalCount - 1)
