@@ -963,24 +963,17 @@ export class CallArgumentInspector implements vscode.Disposable {
         continue;
       }
 
-      // Regex matching function and method calls: e.g. obj.method(...) or func(...)
-      const callRegex = /(?:([A-Za-z0-9_]+)\.)?([A-Za-z0-9_]+)\s*\(/g;
+      // Regex matching function and method calls: e.g. obj.method(...) or self.gcode.method(...) or func(...)
+      const callRegex = /(?:((?:[A-Za-z0-9_]+\.)*[A-Za-z0-9_]+)\.)?([A-Za-z0-9_]+)\s*\(/g;
       let match: RegExpExecArray | null;
 
       while ((match = callRegex.exec(line)) !== null) {
         const receiver = match[1];
         const methodName = match[2];
 
-        // Skip Python built-ins unless locally defined
-        if (!receiver && PYTHON_BUILTINS.has(methodName)) {
+        // Skip Python built-ins or polymorphic calls without receiver
+        if (!receiver && (PYTHON_BUILTINS.has(methodName) || this.isPolymorphicMethod(methodName))) {
           continue;
-        }
-
-        // Skip common polymorphic/built-in methods unless receiver is 'self'/'cls'
-        if (this.isPolymorphicMethod(methodName)) {
-          if (receiver !== 'self' && receiver !== 'cls') {
-            continue;
-          }
         }
 
         const openParenChar = match.index + match[0].lastIndexOf('(');
@@ -1012,9 +1005,31 @@ export class CallArgumentInspector implements vscode.Disposable {
         } else if ((receiver === 'self' || receiver === 'cls') && this.isPolymorphicMethod(methodName)) {
           continue;
         } else if (receiver && receiver !== 'self' && receiver !== 'cls') {
-          // If receiver is a variable, check if it was inferred to a specific class (e.g. lookup_object or return type)
-          const inferredType = ContextResolver.inferVariableType(document, receiver, lineIdx, this.indexer);
-          const isGeneric = GENERIC_VARIABLE_NAMES.has(receiver);
+          // If receiver is a variable or self property, check if it was inferred to a specific class
+          const rawProp = receiver.replace(/^(?:self|this)\./, '');
+          const isGeneric = GENERIC_VARIABLE_NAMES.has(receiver) || GENERIC_VARIABLE_NAMES.has(rawProp);
+
+          let inferredType = ContextResolver.inferVariableType(document, receiver, lineIdx, this.indexer);
+          if (!inferredType && receiver.includes('.')) {
+            inferredType = ContextResolver.inferSelfPropertyType(document, rawProp, lineIdx);
+          }
+          if (!inferredType) {
+            inferredType = ContextResolver.inferSelfPropertyType(document, rawProp, lineIdx);
+          }
+          let hasComponentMatch = false;
+          // Component name match fallback: e.g. gcode, toolhead, printer
+          if (!inferredType && !isGeneric) {
+            const cleanRaw = rawProp.replace(/_/g, '').toLowerCase();
+            const componentMatch = candidateDefs.filter(
+              (d) =>
+                d.containerName?.replace(/_/g, '').toLowerCase() === cleanRaw ||
+                d.uri.fsPath.replace(/_/g, '').toLowerCase().includes(cleanRaw)
+            );
+            if (componentMatch.length > 0) {
+              candidateDefs = componentMatch;
+              hasComponentMatch = true;
+            }
+          }
 
           if (inferredType) {
             // Built-in Python types (dict, list, etc.) have dynamic native methods; skip inspection
@@ -1036,8 +1051,8 @@ export class CallArgumentInspector implements vscode.Disposable {
               // DO NOT fall back to inspecting against random other classes!
               continue;
             }
-          } else if (isGeneric) {
-            // Generic variable name (e.g. result, data, ret, item) with unknown class, skip
+          } else if (isGeneric || (!hasComponentMatch && this.isPolymorphicMethod(methodName))) {
+            // Generic variable name or un-inferred polymorphic method, skip
             continue;
           }
         }

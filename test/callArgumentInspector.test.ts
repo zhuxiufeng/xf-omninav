@@ -605,6 +605,50 @@ class Cat(Mammal):
     testIndexer.dispose();
   });
 
+  await t.test('Chained property call: self.gcode.run_script_from_command should detect excess positional argument', async () => {
+    // 1. Index GCodeDispatch in gcode.py
+    const gcodeDoc = new (vscode as any).MockTextDocument(
+      `class GCodeDispatch:
+    def run_script_from_command(self, script):
+        pass
+`,
+      '/workspace/klippy/gcode.py',
+      'python'
+    );
+    await indexer.indexDocument(gcodeDoc);
+
+    // 2. Index a separate class that has run_script_from_command with 2 arguments
+    const otherDoc = new (vscode as any).MockTextDocument(
+      `class OtherComponent:
+    def run_script_from_command(self, cmd, showlog=True):
+        pass
+`,
+      '/workspace/klippy/extras/other.py',
+      'python'
+    );
+    await indexer.indexDocument(otherDoc);
+
+    // 3. User document has self.gcode = lookup_object('gcode') and calls self.gcode.run_script_from_command('G90', 1)
+    const callerDoc = new (vscode as any).MockTextDocument(
+      `class NozzleManager:
+    def __init__(self, config):
+        self.gcode = config.get_printer().lookup_object('gcode', None)
+
+    def execute_move(self):
+        self.gcode.run_script_from_command('G90', 1)
+`,
+      '/workspace/klippy/extras/nozzle_manager.py',
+      'python'
+    );
+    await indexer.indexDocument(callerDoc);
+
+    const diags = inspector.inspectDocument(callerDoc);
+    assert.ok(diags.length > 0, 'Should detect error for excess argument on self.gcode.run_script_from_command');
+    assert.equal(diags[0].code, 'too-many-arguments');
+    assert.ok(diags[0].message.includes('run_script_from_command'));
+    assert.ok(diags[0].message.includes('最多接收 1 个位置参数'));
+  });
+
   await t.test('OmniStatusBar: should format symbol count and indexing status cleanly', async () => {
     const statusBar = new OmniStatusBar(indexer);
     statusBar.update();

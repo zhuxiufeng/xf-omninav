@@ -370,21 +370,45 @@ export class ContextResolver {
   }
 
   /**
-   * Infer property type from self.<propName> = ClassName(...) or this.<propName> = ...
+   * Infer property type from self.<propName> = ClassName(...) or lookup_object('...') or this.<propName> = ...
    */
   public static inferSelfPropertyType(
     document: vscode.TextDocument,
     propName: string,
     currentLine?: number
   ): string | undefined {
-    const text = document.getText();
-    const escaped = propName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    // Match self.prop = ClassName(...) or self.prop = module.ClassName(...)
-    const regex = new RegExp(`(?:self|this)\\.${escaped}\\s*=\\s*(?:[A-Za-z0-9_]+\\.)?([A-Z][A-Za-z0-9_]*)`);
-    const match = text.match(regex);
-    if (match && match[1]) {
-      return match[1];
+    const cleanProp = propName.replace(/^(?:self|this)\./, '');
+    const escaped = cleanProp.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    // 1. Match factory / lookup / service locator pattern:
+    // e.g. self.gcode = self.printer.lookup_object('gcode', None)
+    const lookupRegex = new RegExp(
+      `(?:self|this)\\.${escaped}\\s*=\\s*.*?(?:lookup_object|load_object|get_service|get_component|resolve|get_instance|get_client|create_client)\\s*\\(\\s*['"]([A-Za-z0-9_]+)['"]`
+    );
+
+    // 2. Match direct class instantiation:
+    // e.g. self.prop = ClassName(...) or self.prop = module.ClassName(...)
+    const classRegex = new RegExp(
+      `(?:self|this)\\.${escaped}\\s*=\\s*(?:[A-Za-z0-9_]+\\.)?([A-Z][A-Za-z0-9_]*)\\s*\\(`
+    );
+
+    const totalLines = typeof document.lineCount === 'number' ? document.lineCount : 5000;
+    // Scan up to first 800 lines (where __init__ and setup methods reside)
+    const scanLimit = Math.min(totalLines, 800);
+    for (let i = 0; i < scanLimit; i++) {
+      const line = typeof document.lineAt === 'function' ? document.lineAt(i).text : '';
+      if (!line || (!line.includes(`.${cleanProp}`) && !line.includes(cleanProp))) continue;
+
+      const mLookup = line.match(lookupRegex);
+      if (mLookup && mLookup[1]) {
+        return mLookup[1];
+      }
+      const mClass = line.match(classRegex);
+      if (mClass && mClass[1]) {
+        return mClass[1];
+      }
     }
+
     return undefined;
   }
 
