@@ -193,6 +193,27 @@ def main():
             if install_vsix_to_dir(vsix_path, t_dir, ext_id, version):
                 installed_count += 1
 
+    # Hot-deploy directly into running Antigravity IDE instance via IPC socket
+    import glob
+    ipc_socks = sorted(glob.glob("/run/user/1000/vscode-ipc-*.sock"), key=os.path.getmtime, reverse=True)
+    antigravity_bin = "/home/zxf/.local/bin/antigravity-ide"
+    if ipc_socks and os.path.exists(antigravity_bin):
+        latest_sock = ipc_socks[0]
+        env = os.environ.copy()
+        env["VSCODE_IPC_HOOK_CLI"] = latest_sock
+        try:
+            res = subprocess.run(
+                [antigravity_bin, "--install-extension", str(vsix_path), "--force"],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if res.returncode == 0:
+                log(f"Hot-deployed directly into running Antigravity IDE window via IPC socket ({Path(latest_sock).name})", "DONE")
+        except Exception as e:
+            log(f"Antigravity IDE hot-deploy notice: {e}", "WARN")
+
     # Optional: invoke code CLI if available
     code_bins = [
         "/mnt/c/Users/sageb/AppData/Local/Programs/Microsoft VS Code/bin/code",
