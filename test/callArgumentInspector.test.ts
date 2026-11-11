@@ -295,6 +295,32 @@ test('CallArgumentInspector tests', async (t) => {
     assert.equal(diagnostics.length, 0, 'result.update should be recognized as dict update, producing 0 diagnostics');
   });
 
+  await t.test('inspectDocument: should never falsely flag gcode_move.get_status() when toolhead.get_status requires eventtime', async () => {
+    // Index toolhead.py with def get_status(self, eventtime)
+    const toolheadDoc = new (vscode as any).MockTextDocument(
+      `class Toolhead:
+    def get_status(self, eventtime):
+        pass
+`,
+      '/workspace/toolhead.py',
+      'python'
+    );
+    await indexer.indexDocument(toolheadDoc);
+
+    // Caller document in nozzle_manager_wrapper.py
+    const callerDoc = new (vscode as any).MockTextDocument(
+      `def some_func(self):
+    gcode_move = self.printer.lookup_object('gcode_move')
+    saved_z_offset = gcode_move.get_status()['homing_origin'].z
+`,
+      '/workspace/caller_gcode_move.py',
+      'python'
+    );
+
+    const diagnostics = inspector.inspectDocument(callerDoc);
+    assert.equal(diagnostics.length, 0, 'gcode_move.get_status should skip mismatching toolhead.get_status and produce 0 diagnostics');
+  });
+
   inspector.dispose();
   indexer.dispose();
 });

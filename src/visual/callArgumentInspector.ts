@@ -174,6 +174,27 @@ export const COMMON_POLYMORPHIC_METHODS = new Set([
   'endswith',
   'lower',
   'upper',
+  // Common Klipper & hardware protocol methods implemented with varying signatures across components
+  'get_status',
+  'get_name',
+  'get_state',
+  'get_time',
+  'get_position',
+  'get_temp',
+  'get_temperature',
+  'get_commanders',
+  'stats',
+  'dump_debug',
+  'handle_connect',
+  'handle_ready',
+  'handle_shutdown',
+  'respond_info',
+  'respond_raw',
+  'register_command',
+  'lookup_object',
+  'raw_command',
+  'run_script',
+  'run_script_from_command',
 ]);
 
 /**
@@ -693,17 +714,19 @@ export class CallArgumentInspector implements vscode.Disposable {
             if (['dict', 'list', 'set', 'tuple', 'str', 'bool', 'number'].includes(inferredType)) {
               continue;
             }
-            const pascalName = inferredType[0].toUpperCase() + inferredType.slice(1);
+            const normInferred = inferredType.replace(/_/g, '').toLowerCase();
             const matchingDefs = candidateDefs.filter(
               (d) =>
-                d.containerName === inferredType ||
-                d.containerName === pascalName ||
-                d.containerName === `${pascalName}Action` ||
-                d.uri.fsPath.includes(inferredType)
+                d.containerName?.replace(/_/g, '').toLowerCase() === normInferred ||
+                d.containerName?.replace(/_/g, '').toLowerCase() === `${normInferred}action` ||
+                d.uri.fsPath.replace(/_/g, '').toLowerCase().includes(normInferred)
             );
             if (matchingDefs.length > 0) {
               candidateDefs = matchingDefs;
-            } else if (isGeneric) {
+            } else {
+              // When receiver is inferred to a specific component (e.g. gcode_move),
+              // but its class definition is not found among candidate definitions,
+              // DO NOT fall back to inspecting against random other classes!
               continue;
             }
           } else if (isGeneric) {
@@ -838,11 +861,11 @@ export class CallArgumentInspector implements vscode.Disposable {
                 ),
                 renderOptions: {
                   after: {
-                    contentText: ` ❗缺少必填参数: ${missingNames.join(', ')}`,
+                    contentText: ` ❗缺少必填参数: ${missingNames.join(', ')} `,
                     color: '#ff4d4f',
                     fontWeight: 'bold',
                     fontStyle: 'normal',
-                    margin: '0 0 0 8px',
+                    margin: '0 8px 0 8px',
                   },
                 },
               });
