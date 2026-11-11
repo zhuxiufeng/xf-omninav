@@ -17,6 +17,54 @@ export interface ReceiverInfo {
   enclosingClass?: EnclosingClassInfo;
 }
 
+export const GENERIC_VARIABLE_NAMES = new Set([
+  'result',
+  'results',
+  'retry_result',
+  'ret',
+  'res',
+  'data',
+  'item',
+  'items',
+  'msg',
+  'val',
+  'value',
+  'values',
+  'params',
+  'param',
+  'args',
+  'kwargs',
+  'info',
+  'resp',
+  'response',
+  'state',
+  'status',
+  'err',
+  'error',
+  'errors',
+  'config',
+  'cfg',
+  'obj',
+  'target',
+  'node',
+  'element',
+  'entry',
+  'record',
+  'records',
+  'row',
+  'col',
+  'line',
+  'lines',
+  'buf',
+  'buffer',
+  'stream',
+  'temp',
+  'tmp',
+  'key',
+  'keys',
+  'd',
+]);
+
 export class ContextResolver {
   /**
    * Determine the enclosing class of a given position in a document.
@@ -171,10 +219,11 @@ export class ContextResolver {
 
       // Infer variable type by scanning backward in current function/scope
       const inferredType = this.inferVariableType(document, varName, position.line);
+      const isGeneric = GENERIC_VARIABLE_NAMES.has(varName);
       return {
         rawPrefix: prefix,
         varName,
-        containerName: inferredType || this.snakeToPascal(varName),
+        containerName: inferredType || (isGeneric ? undefined : this.snakeToPascal(varName)),
         isSelf: false,
         isCls: false,
         isSuper: false,
@@ -192,6 +241,8 @@ export class ContextResolver {
   /**
    * Scan upwards in current local scope to infer variable type.
    * e.g. `d = Dog()` or `d: Dog = ...` or `def test(d: Dog):`
+   * Also recognizes standard Python built-in literals like `result = { ... }` (dict),
+   * `items = [ ... ]` (list), `s = "..."` (str), etc.
    */
   public static inferVariableType(
     document: vscode.TextDocument,
@@ -217,6 +268,29 @@ export class ContextResolver {
       const line = document.lineAt(i).text.trim();
       if (!line || line.startsWith('#') || line.startsWith('//')) {
         continue;
+      }
+
+      // Check standard Python literal assignments (e.g. result = { ... }, items = [ ... ])
+      if (new RegExp(`^${escaped}\\s*=\\s*(\\{|dict\\s*\\()`).test(line)) {
+        return 'dict';
+      }
+      if (new RegExp(`^${escaped}\\s*=\\s*(\\[|list\\s*\\()`).test(line)) {
+        return 'list';
+      }
+      if (new RegExp(`^${escaped}\\s*=\\s*set\\s*\\(`).test(line)) {
+        return 'set';
+      }
+      if (new RegExp(`^${escaped}\\s*=\\s*tuple\\s*\\(`).test(line)) {
+        return 'tuple';
+      }
+      if (new RegExp(`^${escaped}\\s*=\\s*[fFrRbBuU]?['"]`).test(line)) {
+        return 'str';
+      }
+      if (new RegExp(`^${escaped}\\s*=\\s*(?:True|False)\\b`).test(line)) {
+        return 'bool';
+      }
+      if (new RegExp(`^${escaped}\\s*=\\s*\\d+(?:\\.\\d+)?\\b`).test(line)) {
+        return 'number';
       }
 
       for (const pattern of patterns) {

@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { SymbolIndexer } from '../indexer/symbolIndexer';
 import { SymbolDefinition } from '../types';
 import { getOmniConfig, debounce, ICON_DATA_URIS } from '../utils';
-import { ContextResolver } from '../resolver/contextResolver';
+import { ContextResolver, GENERIC_VARIABLE_NAMES } from '../resolver/contextResolver';
 
 export interface ParamSpec {
   name: string;
@@ -671,8 +671,8 @@ export class CallArgumentInspector implements vscode.Disposable {
           continue;
         }
 
-        // Intra-class prioritization: if receiver is 'self' and we are inside a class
-        if (receiver === 'self' && currentClassName) {
+        // Intra-class prioritization: if receiver is 'self'/'cls' and we are inside a class
+        if ((receiver === 'self' || receiver === 'cls') && currentClassName) {
           const classSpecific = candidateDefs.filter(
             (d) => d.containerName === currentClassName
           );
@@ -681,10 +681,18 @@ export class CallArgumentInspector implements vscode.Disposable {
           } else if (COMMON_POLYMORPHIC_METHODS.has(methodName)) {
             continue;
           }
+        } else if ((receiver === 'self' || receiver === 'cls') && COMMON_POLYMORPHIC_METHODS.has(methodName)) {
+          continue;
         } else if (receiver && receiver !== 'self' && receiver !== 'cls') {
           // If receiver is a variable, check if it was inferred to a specific class (e.g. lookup_object)
           const inferredType = ContextResolver.inferVariableType(document, receiver, lineIdx);
+          const isGeneric = GENERIC_VARIABLE_NAMES.has(receiver);
+
           if (inferredType) {
+            // Built-in Python types (dict, list, etc.) have dynamic native methods; skip inspection
+            if (['dict', 'list', 'set', 'tuple', 'str', 'bool', 'number'].includes(inferredType)) {
+              continue;
+            }
             const pascalName = inferredType[0].toUpperCase() + inferredType.slice(1);
             const matchingDefs = candidateDefs.filter(
               (d) =>
@@ -695,7 +703,12 @@ export class CallArgumentInspector implements vscode.Disposable {
             );
             if (matchingDefs.length > 0) {
               candidateDefs = matchingDefs;
+            } else if (isGeneric) {
+              continue;
             }
+          } else if (isGeneric) {
+            // Generic variable name (e.g. result, data, ret, item) with unknown class, skip
+            continue;
           }
         }
 

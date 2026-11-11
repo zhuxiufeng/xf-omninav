@@ -262,6 +262,39 @@ test('CallArgumentInspector tests', async (t) => {
     assert.equal(sig.minPositional, 0, 'self should be stripped from positional bounds even if isMethod=false');
   });
 
+  await t.test('inspectDocument: should correctly identify result as dict and never match adxl345.update(mcu_clock, chip_clock)', async () => {
+    // Index adxl345 def update(self, mcu_clock, chip_clock)
+    const adxlDoc = new (vscode as any).MockTextDocument(
+      `class ADXL345:
+    def update(self, mcu_clock, chip_clock):
+        pass
+`,
+      '/workspace/adxl345.py',
+      'python'
+    );
+    await indexer.indexDocument(adxlDoc);
+
+    // Call result.update({...}) in nozzle_manager_wrapper.py
+    const resultDoc = new (vscode as any).MockTextDocument(
+      `def move_1207_retry(self, num):
+    result = {
+        "ok": False,
+        "error": "right_move_retry_failed",
+    }
+    result.update({
+        "error": "extruder_open_failed",
+        "msg": "failed",
+    })
+    return result
+`,
+      '/workspace/nozzle_wrapper_dict.py',
+      'python'
+    );
+
+    const diagnostics = inspector.inspectDocument(resultDoc);
+    assert.equal(diagnostics.length, 0, 'result.update should be recognized as dict update, producing 0 diagnostics');
+  });
+
   inspector.dispose();
   indexer.dispose();
 });

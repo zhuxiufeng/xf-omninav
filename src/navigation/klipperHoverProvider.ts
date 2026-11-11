@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ContextResolver } from '../resolver/contextResolver';
+import { ContextResolver, GENERIC_VARIABLE_NAMES } from '../resolver/contextResolver';
 import { SymbolIndexer } from '../indexer/symbolIndexer';
 import { getOmniConfig } from '../utils';
 
@@ -23,8 +23,13 @@ export class KlipperHoverProvider implements vscode.HoverProvider {
     const word = document.getText(wordRange);
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(word)) return undefined;
 
+    if (GENERIC_VARIABLE_NAMES.has(word)) return undefined;
+
     const inferredType = ContextResolver.inferVariableType(document, word, position.line);
     if (!inferredType) return undefined;
+    if (['dict', 'list', 'set', 'tuple', 'str', 'bool', 'number'].includes(inferredType)) {
+      return undefined;
+    }
 
     const pascalName = inferredType[0].toUpperCase() + inferredType.slice(1);
     let defs = this.indexer.findExact(inferredType);
