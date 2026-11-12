@@ -1182,6 +1182,11 @@ export class CallArgumentInspector implements vscode.Disposable {
         continue;
       }
 
+      // Fast exit: If the line contains no opening parenthesis, it cannot be a function or method call
+      if (!line.includes('(')) {
+        continue;
+      }
+
       // Regex matching function and method calls: e.g. obj.method(...) or self.gcode.method(...) or func(...)
       const callRegex = /(?:((?:[A-Za-z0-9_]+\.)*[A-Za-z0-9_]+)\.)?([A-Za-z0-9_]+)\s*\(/g;
       let match: RegExpExecArray | null;
