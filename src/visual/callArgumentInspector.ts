@@ -221,6 +221,24 @@ export const COMMON_POLYMORPHIC_METHODS = new Set([
   'endswith',
   'lower',
   'upper',
+  'get_status',
+  'set_status',
+  'get_state',
+  'set_state',
+  'status',
+  'state',
+  'enable',
+  'disable',
+  'query',
+  'poll',
+  'setup',
+  'cleanup',
+  'validate',
+  'cancel',
+  'reset_state',
+  'update_status',
+  'check_status',
+  'refresh',
 ]);
 
 /**
@@ -1335,9 +1353,12 @@ export class CallArgumentInspector implements vscode.Disposable {
               return (
                 cont === cleanRaw ||
                 cont === cleanTerminal ||
-                (cont && (cont.endsWith(cleanRaw) || cont.endsWith(cleanTerminal))) ||
-                pth.includes(cleanRaw) ||
-                pth.includes(cleanTerminal)
+                cont === cleanRaw + 'action' ||
+                cont === cleanTerminal + 'action' ||
+                pth.endsWith('/' + cleanRaw + '.py') ||
+                pth.endsWith('/' + cleanTerminal + '.py') ||
+                pth.endsWith('/' + cleanRaw + '_wrapper.py') ||
+                pth.endsWith('/' + cleanTerminal + '_wrapper.py')
               );
             });
             if (componentMatch.length > 0) {

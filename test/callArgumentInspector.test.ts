@@ -1297,6 +1297,45 @@ static size_t searchCodeIndex(const unsigned* array, size_t array_size, size_t v
     assert.ok(!diag, `Python caller should NOT match C function without ffi_lib bridge, got: ${diag?.message}`);
   });
 
+  await t.test('Screenshot Reproduction 2: sensor = getattr(self, waste_chute_sensor); sensor.get_status() should NOT flag missing eventtime', async () => {
+    // 1. Index WasteChuteSensor in box_wrapper.py
+    const boxWrapperText = `
+class WasteChuteSensor:
+    def __init__(self, config):
+        pass
+    def get_status(self):
+        return {'enabled': True}
+`;
+    indexer.indexFile((vscode as any).Uri.file('/workspace/box_wrapper.py'), boxWrapperText);
+
+    // 2. MultiColorMaterialBoxWrapper in box_nano_wrapper.py calling sensor.get_status()
+    const nanoWrapperText = `
+class MultiColorMaterialBoxWrapper:
+    def __init__(self, config):
+        self.waste_chute_sensor = box_wrapper.WasteChuteSensor(config)
+
+    def get_status(self, eventtime):
+        sensor = getattr(self, 'waste_chute_sensor', None)
+        if sensor is not None:
+            res = {}
+            res["waste_chute"] = sensor.get_status()
+            return res
+`;
+    const doc = new (vscode as any).MockTextDocument(
+      nanoWrapperText,
+      '/workspace/box_nano_wrapper.py',
+      'python'
+    );
+    indexer.indexFile((vscode as any).Uri.file('/workspace/box_nano_wrapper.py'), nanoWrapperText);
+
+    const diagnostics = inspector.inspectDocument(doc);
+    const getStatusDiag = diagnostics.find((d) => d.message.includes('get_status') || d.message.includes('eventtime'));
+    assert.ok(
+      !getStatusDiag,
+      `sensor.get_status() should NOT flag missing eventtime, but got: ${getStatusDiag?.message}`
+    );
+  });
+
   await t.test('OmniStatusBar: should format symbol count and indexing status cleanly', async () => {
     const statusBar = new OmniStatusBar(indexer);
     statusBar.update();

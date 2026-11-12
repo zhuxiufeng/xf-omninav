@@ -63,6 +63,26 @@ export const GENERIC_VARIABLE_NAMES = new Set([
   'key',
   'keys',
   'd',
+  'sensor',
+  'device',
+  'component',
+  'driver',
+  'adapter',
+  'handler',
+  'helper',
+  'wrapper',
+  'client',
+  'service',
+  'plugin',
+  'listener',
+  'worker',
+  'task',
+  'job',
+  'ctx',
+  'context',
+  'event',
+  'sender',
+  'receiver',
 ]);
 
 export class ContextResolver {
@@ -397,6 +417,18 @@ export class ContextResolver {
         return ContextResolver.snakeToPascal(getterMatch[1]);
       }
 
+      // getattr pattern: sensor = getattr(self, 'waste_chute_sensor', None)
+      const getattrMatch = line.match(
+        new RegExp(`^(?:(?:const|let|var)\\s+)?${escaped}\\s*=\\s*getattr\\(\\s*(?:self|this)\\s*,\\s*['"]([A-Za-z0-9_]+)['"]`)
+      );
+      if (getattrMatch && getattrMatch[1]) {
+        const propType = this.inferSelfPropertyType(document, getattrMatch[1], i);
+        if (propType) {
+          return propType;
+        }
+        return this.snakeToPascal(getattrMatch[1]);
+      }
+
       // Return type inference: var = callee(...)
       if (indexer && typeof indexer.findExact === 'function') {
         const calleeMatch = line.match(
@@ -545,9 +577,28 @@ export class ContextResolver {
     currentLine?: number
   ): string | undefined {
     const cleanProp = propName.replace(/^(?:self|this)\./, '');
+    const totalLines = typeof document.lineCount === 'number' ? document.lineCount : 5000;
+
+    let enclosingClass = '';
+    let startLine = 0;
+    let endLine = Math.min(totalLines, 800);
+
+    if (typeof currentLine === 'number' && currentLine >= 0) {
+      // Find enclosing class definition above currentLine
+      for (let i = currentLine; i >= 0; i--) {
+        const text = typeof document.lineAt === 'function' ? document.lineAt(i).text : '';
+        const mClass = text.trim().match(/^class\s+([A-Za-z0-9_]+)/);
+        if (mClass) {
+          enclosingClass = mClass[1];
+          startLine = i;
+          endLine = Math.min(totalLines, i + 800);
+          break;
+        }
+      }
+    }
 
     const docVer = (document as any).version ?? 0;
-    const cacheKey = `${document.uri.toString()}#${cleanProp}`;
+    const cacheKey = `${document.uri.toString()}#${enclosingClass}#${cleanProp}`;
     const cached = this.selfPropCache.get(cacheKey);
     if (cached && cached.version === docVer) {
       return cached.type;
@@ -585,10 +636,8 @@ export class ContextResolver {
       return res;
     };
 
-    const totalLines = typeof document.lineCount === 'number' ? document.lineCount : 5000;
-    // Scan up to first 800 lines (where __init__ and setup methods reside)
-    const scanLimit = Math.min(totalLines, 800);
-    for (let i = 0; i < scanLimit; i++) {
+    // Scan enclosing class lines (e.g. from class definition to +800 lines)
+    for (let i = startLine; i < endLine; i++) {
       const line = typeof document.lineAt === 'function' ? document.lineAt(i).text : '';
       if (!line || (!line.includes(`.${cleanProp}`) && !line.includes(cleanProp))) continue;
 
