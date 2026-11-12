@@ -132,7 +132,9 @@ export class SymbolIndexer implements vscode.Disposable {
       return;
     }
     this.isIndexing = true;
+    this._onDidIndexUpdate.fire(this.totalSymbols);
 
+    const startTime = Date.now();
     try {
       // 0. If in-memory index is empty, attempt 5ms instant hydration from persistent disk cache
       if (this.fileMap.size === 0) {
@@ -217,8 +219,15 @@ export class SymbolIndexer implements vscode.Disposable {
               let defs: SymbolDefinition[] | undefined;
               if (this.workerPool.available) {
                 try {
-                  defs = await this.workerPool.parseText(uriStr, text, workspaceRoot);
-                } catch {}
+                  defs = await Promise.race([
+                    this.workerPool.parseText(uriStr, text, workspaceRoot),
+                    new Promise<never>((_, reject) =>
+                      setTimeout(() => reject(new Error('parseText timeout')), 3000)
+                    ),
+                  ]);
+                } catch {
+                  defs = undefined;
+                }
               }
 
               this.indexFile(uri, text, defs);
@@ -239,6 +248,10 @@ export class SymbolIndexer implements vscode.Disposable {
     } finally {
       this.isIndexing = false;
       this._onDidIndexUpdate.fire(this.totalSymbols);
+      const elapsed = Date.now() - startTime;
+      console.log(
+        `[XF OmniNav] Workspace indexing completed in ${elapsed}ms (${this.totalSymbols} symbols across ${this.totalFiles} files)`
+      );
     }
   }
 

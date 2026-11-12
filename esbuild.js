@@ -1,32 +1,47 @@
 const esbuild = require('esbuild');
+const path = require('path');
 
 const args = process.argv.slice(2);
 const isWatch = args.includes('--watch');
 const isProduction = args.includes('--production');
 
 async function main() {
-  const ctx = await esbuild.context({
-    entryPoints: {
-      extension: 'src/extension.ts',
-      parseWorker: 'src/indexer/parseWorker.ts',
-    },
+  const commonOptions = {
     bundle: true,
     format: 'cjs',
     minify: isProduction,
     sourcemap: !isProduction,
     sourcesContent: false,
     platform: 'node',
+    logLevel: 'info',
+  };
+
+  const extensionCtx = await esbuild.context({
+    ...commonOptions,
+    entryPoints: {
+      extension: 'src/extension.ts',
+    },
     outdir: 'dist',
     external: ['vscode'],
-    logLevel: 'info',
+  });
+
+  const workerCtx = await esbuild.context({
+    ...commonOptions,
+    entryPoints: {
+      parseWorker: 'src/indexer/parseWorker.ts',
+    },
+    outdir: 'dist',
+    alias: {
+      vscode: path.resolve(__dirname, 'src/indexer/workerVscodeShim.ts'),
+    },
   });
 
   if (isWatch) {
     console.log('[esbuild] Watching for changes...');
-    await ctx.watch();
+    await Promise.all([extensionCtx.watch(), workerCtx.watch()]);
   } else {
-    await ctx.rebuild();
-    await ctx.dispose();
+    await Promise.all([extensionCtx.rebuild(), workerCtx.rebuild()]);
+    await Promise.all([extensionCtx.dispose(), workerCtx.dispose()]);
     console.log('[esbuild] Build complete.');
   }
 }

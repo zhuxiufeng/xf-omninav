@@ -2,7 +2,7 @@
   "name": "xf-omninav",
   "displayName": "XF OmniNav",
   "description": "PyCharm-grade universal IDE enhancement & navigation suite: precision symbol & inheritance navigation, heuristic call argument inspection, independent branch folding, file error badges, and status bar monitor.",
-  "version": "1.0.55",
+  "version": "1.0.56",
   "publisher": "Vivian",
   "icon": "resources/icon.png",
   "repository": {

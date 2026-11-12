@@ -6,3 +6,4 @@ import './fileErrorDecorator.test';
 import './callArgumentInspector.test';
 import './extensionLifecycle.test';
 import './realKlipperFile.test';
+import './workerPool.test';

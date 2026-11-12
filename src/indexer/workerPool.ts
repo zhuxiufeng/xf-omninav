@@ -25,6 +25,7 @@ interface WorkerTask {
   workspaceRoot?: string;
   resolve: (defs: CompactSymbolDefinition[]) => void;
   reject: (err: any) => void;
+  timer?: NodeJS.Timeout;
 }
 
 export class WorkerPool implements vscode.Disposable {
@@ -71,49 +72,59 @@ export class WorkerPool implements vscode.Disposable {
 
       for (let i = 0; i < poolSize; i++) {
         const worker = new Worker(workerPath);
-        worker.on('message', (res: { id: number; uriStr: string; defs?: SerializedSymbolItem[]; error?: string }) => {
-          const task = this.activeTasks.get(res.id);
-          this.activeTasks.delete(res.id);
-          this.activeWorkers.delete(res.id);
+        worker.on(
+          'message',
+          (res: { id: number; uriStr: string; defs?: SerializedSymbolItem[]; error?: string }) => {
+            const task = this.activeTasks.get(res.id);
+            this.activeTasks.delete(res.id);
+            this.activeWorkers.delete(res.id);
 
-          this.idleWorkers.push(worker);
-          this.drainQueue();
+            if (task && task.timer) {
+              clearTimeout(task.timer);
+            }
 
-          if (task) {
-            if (res.error) {
-              task.reject(new Error(res.error));
-            } else if (res.defs) {
-              const uri = vscode.Uri.parse(res.uriStr);
-              const defs = res.defs.map(
-                (d) =>
-                  new CompactSymbolDefinition({
-                    name: d.name,
-                    kind: d.kind,
-                    uri,
-                    range: d.r,
-                    selectionRange: d.sr,
-                    signature: d.signature,
-                    fileRelativePath: d.fileRelativePath,
-                    containerName: d.containerName,
-                    parentContainers: d.parentContainers,
-                    docstring: d.docstring,
-                    isExported: d.isExported,
-                  })
-              );
-              task.resolve(defs);
-            } else {
-              task.resolve([]);
+            worker.unref();
+            this.idleWorkers.push(worker);
+            this.drainQueue();
+
+            if (task) {
+              if (res.error) {
+                task.reject(new Error(res.error));
+              } else if (res.defs) {
+                const uri = vscode.Uri.parse(res.uriStr);
+                const defs = res.defs.map(
+                  (d) =>
+                    new CompactSymbolDefinition({
+                      name: d.name,
+                      kind: d.kind,
+                      uri,
+                      range: d.r,
+                      selectionRange: d.sr,
+                      signature: d.signature,
+                      fileRelativePath: d.fileRelativePath,
+                      containerName: d.containerName,
+                      parentContainers: d.parentContainers,
+                      docstring: d.docstring,
+                      isExported: d.isExported,
+                    })
+                );
+                task.resolve(defs);
+              } else {
+                task.resolve([]);
+              }
             }
           }
-        });
+        );
 
         worker.on('error', (_err) => {
-          // If a worker encounters an error, remove it from active and idle pools
-          const idleIdx = this.idleWorkers.indexOf(worker);
-          if (idleIdx !== -1) {
-            this.idleWorkers.splice(idleIdx, 1);
-          }
+          this.removeWorker(worker);
         });
+
+        worker.on('exit', () => {
+          this.removeWorker(worker);
+        });
+
+        worker.unref();
 
         this.workers.push(worker);
         this.idleWorkers.push(worker);
@@ -122,6 +133,45 @@ export class WorkerPool implements vscode.Disposable {
       this.isEnabled = this.workers.length > 0;
     } catch {
       this.isEnabled = false;
+    }
+  }
+
+  private removeWorker(worker: Worker): void {
+    try {
+      worker.terminate();
+    } catch {}
+
+    const idx = this.workers.indexOf(worker);
+    if (idx !== -1) {
+      this.workers.splice(idx, 1);
+    }
+    const idleIdx = this.idleWorkers.indexOf(worker);
+    if (idleIdx !== -1) {
+      this.idleWorkers.splice(idleIdx, 1);
+    }
+
+    // Fail any active task assigned to this worker
+    for (const [id, w] of this.activeWorkers.entries()) {
+      if (w === worker) {
+        this.activeWorkers.delete(id);
+        const task = this.activeTasks.get(id);
+        if (task) {
+          if (task.timer) {
+            clearTimeout(task.timer);
+          }
+          this.activeTasks.delete(id);
+          task.reject(new Error('Worker terminated unexpectedly'));
+        }
+      }
+    }
+
+    if (this.workers.length === 0) {
+      this.isEnabled = false;
+      // Reject all remaining pending tasks so callers can fall back
+      while (this.pendingQueue.length > 0) {
+        const pending = this.pendingQueue.shift()!;
+        pending.reject(new Error('Worker pool unavailable'));
+      }
     }
   }
 
@@ -158,9 +208,24 @@ export class WorkerPool implements vscode.Disposable {
       const task = this.pendingQueue.shift()!;
       const worker = this.idleWorkers.shift()!;
 
+      // 4000ms parsing timeout protection per file
+      const timer = setTimeout(() => {
+        this.activeTasks.delete(task.id);
+        const w = this.activeWorkers.get(task.id);
+        this.activeWorkers.delete(task.id);
+        if (w) {
+          this.removeWorker(w);
+        }
+        task.reject(new Error(`Worker parsing timed out for ${task.uriStr}`));
+        this.drainQueue();
+      }, 4000);
+
+      task.timer = timer;
+
       this.activeTasks.set(task.id, task);
       this.activeWorkers.set(task.id, worker);
 
+      worker.ref();
       worker.postMessage({
         id: task.id,
         uriStr: task.uriStr,
@@ -172,6 +237,11 @@ export class WorkerPool implements vscode.Disposable {
 
   public dispose(): void {
     this.isEnabled = false;
+    for (const task of this.activeTasks.values()) {
+      if (task.timer) {
+        clearTimeout(task.timer);
+      }
+    }
     for (const w of this.workers) {
       try {
         w.terminate();
@@ -181,5 +251,6 @@ export class WorkerPool implements vscode.Disposable {
     this.idleWorkers = [];
     this.pendingQueue = [];
     this.activeTasks.clear();
+    this.activeWorkers.clear();
   }
 }
