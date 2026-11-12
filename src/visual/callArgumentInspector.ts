@@ -64,6 +64,9 @@ const PYTHON_BUILTINS = new Set([
   'zip',
   'map',
   'filter',
+  'sorted',
+  'reversed',
+  'slice',
   'isinstance',
   'issubclass',
   'getattr',
@@ -79,12 +82,23 @@ const PYTHON_BUILTINS = new Set([
   'set',
   'tuple',
   'bytes',
+  'bytearray',
+  'frozenset',
+  'memoryview',
+  'complex',
   'super',
   'type',
+  'object',
   'id',
   'hash',
   'repr',
+  'ascii',
   'format',
+  'chr',
+  'ord',
+  'hex',
+  'oct',
+  'bin',
   'open',
   'input',
   'min',
@@ -98,11 +112,38 @@ const PYTHON_BUILTINS = new Set([
   'pow',
   'iter',
   'next',
+  'aiter',
+  'anext',
   'callable',
   'vars',
   'dir',
   'locals',
   'globals',
+  'eval',
+  'exec',
+  'compile',
+  'classmethod',
+  'staticmethod',
+  'property',
+  'breakpoint',
+  'help',
+  // Common standard exception constructors
+  'Exception',
+  'BaseException',
+  'ValueError',
+  'TypeError',
+  'KeyError',
+  'IndexError',
+  'AttributeError',
+  'RuntimeError',
+  'OSError',
+  'IOError',
+  'ImportError',
+  'ModuleNotFoundError',
+  'StopIteration',
+  'NotImplementedError',
+  'KeyboardInterrupt',
+  'SystemExit',
 ]);
 
 export const COMMON_POLYMORPHIC_METHODS = new Set([
@@ -1173,6 +1214,23 @@ export class CallArgumentInspector implements vscode.Disposable {
         let candidateDefs = exactDefs.filter(
           (d) => d.kind === 'method' || d.kind === 'function'
         );
+
+        // Language isolation: ensure candidate definitions match the current document's language
+        if (isPython) {
+          // In Python, only allow Python symbols unless explicitly accessing CFFI / ctypes bridge
+          const isCffiCall = !!receiver && (receiver === 'ffi_lib' || receiver.startsWith('ffi_lib.') || receiver.startsWith('ctypes.'));
+          if (!isCffiCall) {
+            candidateDefs = candidateDefs.filter((d) => {
+              const p = (d.fileRelativePath || d.uri.fsPath || d.uri.path || '').toLowerCase();
+              return p.endsWith('.py') || p.endsWith('.pyi');
+            });
+          }
+        } else if (isTSorJS) {
+          candidateDefs = candidateDefs.filter((d) => {
+            const p = (d.fileRelativePath || d.uri.fsPath || d.uri.path || '').toLowerCase();
+            return /\.[cm]?[jt]sx?$/.test(p);
+          });
+        }
 
         // Fast path: before giving up on empty candidateDefs, check if the receiver
         // is a known built-in type (dict/list/str/etc.) with a known method signature.

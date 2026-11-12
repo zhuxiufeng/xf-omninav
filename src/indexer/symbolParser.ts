@@ -659,11 +659,40 @@ export class SymbolParser {
     const definitions: SymbolDefinition[] = [];
     const lines = text.split(/\r?\n/);
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const trimmed = line.trim();
+    let inBlockComment = false;
 
-      if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('/*') || trimmed.startsWith('*')) {
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i];
+
+      // Handle multiline block comments
+      if (inBlockComment) {
+        const endComment = line.indexOf('*/');
+        if (endComment !== -1) {
+          inBlockComment = false;
+          line = ' '.repeat(endComment + 2) + line.slice(endComment + 2);
+        } else {
+          continue;
+        }
+      }
+
+      // Replace single-line block comments /* ... */ with whitespace (preserves character offsets)
+      line = line.replace(/\/\*[\s\S]*?\*\//g, (m) => ' '.repeat(m.length));
+
+      // Check if a block comment opens on this line and doesn't close
+      const startComment = line.indexOf('/*');
+      if (startComment !== -1) {
+        inBlockComment = true;
+        line = line.slice(0, startComment);
+      }
+
+      // Strip // line comments
+      const lineComment = line.indexOf('//');
+      if (lineComment !== -1) {
+        line = line.slice(0, lineComment);
+      }
+
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('*')) {
         continue;
       }
 
@@ -733,7 +762,7 @@ export class SymbolParser {
           let prevIsType = false;
           if (i > 0) {
             const prevTrim = lines[i - 1].trim();
-            if (prevTrim && !prevTrim.endsWith(';') && !prevTrim.endsWith('}') && !prevTrim.startsWith('#')) {
+            if (prevTrim && !prevTrim.endsWith(';') && !prevTrim.endsWith('}') && !prevTrim.startsWith('#') && !prevTrim.endsWith('*/')) {
               prevIsType = true;
             }
           }
@@ -769,25 +798,37 @@ export class SymbolParser {
       // e.g. "static inline int32_t idiv_up(int32_t n, int32_t d)"
       // or "void stepcompress_free(struct stepcompress *sc);"
       const singleLineFunc = trimmed.match(
-        /^(?:(?:static|inline|extern|__visible|const|unsigned|signed|void|char|short|int|long|float|double|uint\d+_t|int\d+_t|size_t|struct\s+[A-Za-z0-9_]+|[A-Za-z0-9_]+_t|[A-Za-z0-9_]+)(?:\s*\*+|\s+))+\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(/
+        /^(?:(?:static|inline|extern|__visible|const|unsigned|signed|void|char|short|int|long|float|double|uint\d+_t|int\d+_t|size_t|ssize_t|bool|uintptr_t|intptr_t|struct\s+[A-Za-z0-9_]+|enum\s+[A-Za-z0-9_]+|union\s+[A-Za-z0-9_]+|[A-Za-z0-9_]+_t|[A-Z][A-Za-z0-9_]*)(?:\s*\*+|\s+))+\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*([;{]?)/
       );
       if (singleLineFunc) {
         const name = singleLineFunc[1];
         const keywords = new Set(['if', 'while', 'for', 'switch', 'return', 'sizeof', 'define']);
         if (!keywords.has(name)) {
-          const startCol = line.indexOf(name);
-          const isStatic = trimmed.startsWith('static');
-          definitions.push(new CompactSymbolDefinition({
-            name,
-            kind: 'function',
-            uri,
-            range: new vscode.Range(i, 0, i, line.length),
-            selectionRange: new vscode.Range(i, startCol, i, startCol + name.length),
-            signature: trimmed,
-            fileRelativePath: relativePath,
-            isExported: !isStatic,
-          }));
-          continue;
+          let hasBodyOrSemicolon = singleLineFunc[3] === '{' || singleLineFunc[3] === ';' || trimmed.endsWith('{') || trimmed.endsWith(';');
+          if (!hasBodyOrSemicolon) {
+            for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
+              const nextTrim = lines[j].trim();
+              if (nextTrim.startsWith('{') || nextTrim.startsWith(';')) {
+                hasBodyOrSemicolon = true;
+                break;
+              }
+            }
+          }
+          if (hasBodyOrSemicolon) {
+            const startCol = line.indexOf(name);
+            const isStatic = trimmed.startsWith('static');
+            definitions.push(new CompactSymbolDefinition({
+              name,
+              kind: 'function',
+              uri,
+              range: new vscode.Range(i, 0, i, line.length),
+              selectionRange: new vscode.Range(i, startCol, i, startCol + name.length),
+              signature: trimmed,
+              fileRelativePath: relativePath,
+              isExported: !isStatic,
+            }));
+            continue;
+          }
         }
       }
     }

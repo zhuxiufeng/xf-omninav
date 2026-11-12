@@ -1249,6 +1249,54 @@ def configure(options={}):
     assert.ok(listDiag, `Should detect excess args on list.append(1, 2), got diagnostics: ${JSON.stringify(diagnostics.map(d => d.message))}`);
   });
 
+  await t.test('Screenshot Reproduction: tuple(sorted(remain.items())) should NEVER be flagged as missing argument', async () => {
+    // 1. Simulate an accidental C symbol in lodepng.c or other C file if present
+    const cDocText = `
+/*search the index in the array, that has the largest value smaller than or equal to the given value,
+given array must be sorted (if no value is smaller, it returns the size of the given array)*/
+static size_t searchCodeIndex(const unsigned* array, size_t array_size, size_t value) {
+  return 0;
+}
+`;
+    const cDefs = SymbolParser.parseText(cDocText, (vscode as any).Uri.file('/workspace/lodepng.c'), 'c');
+    assert.equal(cDefs.find(d => d.name === 'sorted'), undefined, 'lodepng.c comment should NOT parse as sorted function');
+
+    // 2. Test python code calling sorted()
+    const pyDoc = new (vscode as any).MockTextDocument(
+      `def _handle_rfid_update(self, data):
+    remain = data.get('remain', {})
+    if remain is not None:
+        sig = tuple(sorted(remain.items()))
+        return sig
+`,
+      '/workspace/box_nano_rfid.py',
+      'python'
+    );
+
+    const diagnostics = inspector.inspectDocument(pyDoc);
+    const sortedDiag = diagnostics.find((d) => d.message.includes('sorted'));
+    assert.ok(!sortedDiag, `sorted() should NOT be flagged with missing required arguments, but got: ${sortedDiag?.message}`);
+  });
+
+  await t.test('Language Isolation: Python call should never resolve to C function in .c file', async () => {
+    // Index a C function directly in indexer
+    const cCode = `int custom_c_worker(int x, int y, int z) { return x + y + z; }`;
+    indexer.indexFile((vscode as any).Uri.file('/workspace/engine.c'), cCode);
+
+    // Call same-name function in Python without receiver
+    const pyDoc = new (vscode as any).MockTextDocument(
+      `def run():
+    custom_c_worker(1)
+`,
+      '/workspace/caller.py',
+      'python'
+    );
+
+    const diagnostics = inspector.inspectDocument(pyDoc);
+    const diag = diagnostics.find((d) => d.message.includes('custom_c_worker'));
+    assert.ok(!diag, `Python caller should NOT match C function without ffi_lib bridge, got: ${diag?.message}`);
+  });
+
   await t.test('OmniStatusBar: should format symbol count and indexing status cleanly', async () => {
     const statusBar = new OmniStatusBar(indexer);
     statusBar.update();
