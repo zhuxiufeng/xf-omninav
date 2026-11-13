@@ -1444,6 +1444,24 @@ class BoxAction:
     assert.ok(!kwDiag2, `Modified interface with retrude_times=10 should have ZERO error, got: ${kwDiag2?.message}`);
   });
 
+  await t.test('Screenshot Reproduction 5: multiline call with trailing backslash line-continuation should NEVER flag duplicate argument', async () => {
+    const serviceDef = `
+class RemainMaterial:
+    def save(self, color=None, type=None):
+        pass
+`;
+    indexer.indexFile((vscode as any).Uri.file('/workspace/remain_material.py'), serviceDef);
+
+    const callerText = `
+def process(remain):
+    remain.save(color="blue", \\
+                type="PLA")
+`;
+    const doc = new (vscode as any).MockTextDocument(callerText, '/workspace/caller_backslash.py', 'python');
+    const diagnostics = inspector.inspectDocument(doc);
+    assert.equal(diagnostics.length, 0, `Multiline call with backslash continuation should have 0 diagnostics, got: ${diagnostics.map(d => d.message).join('; ')}`);
+  });
+
   await t.test('OmniStatusBar: should format symbol count and indexing status cleanly', async () => {
     const statusBar = new OmniStatusBar(indexer);
     statusBar.update();

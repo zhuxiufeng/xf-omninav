@@ -919,6 +919,12 @@ export class CallArgumentInspector implements vscode.Disposable {
         if (ch === '#') {
           break; // python comment
         }
+        if (ch === '\\') {
+          const rest = line.slice(c + 1).trim();
+          if (rest === '' || rest.startsWith('#')) {
+            break; // Python line continuation backslash at end of line: skip so it doesn't pollute argument tokens
+          }
+        }
         if (ch === '(' || ch === '[' || ch === '{') {
           depth++;
         } else if (ch === ')' || ch === ']' || ch === '}') {
@@ -1077,21 +1083,24 @@ export class CallArgumentInspector implements vscode.Disposable {
       let keywordName: string | undefined = undefined;
       let valueText: string | undefined = undefined;
 
-      if (!trimmedPiece.startsWith('*')) {
-        const eqIdx = trimmedPiece.indexOf('=');
+      // Strip line-continuation backslashes or leading whitespace from piece
+      const cleanPiece = trimmedPiece.replace(/^[\\,\s]+/, '').replace(/[\\,\s]+$/, '').trim();
+
+      if (!cleanPiece.startsWith('*')) {
+        const eqIdx = cleanPiece.indexOf('=');
         if (
           eqIdx > 0 &&
-          trimmedPiece[eqIdx - 1] !== '=' &&
-          trimmedPiece[eqIdx - 1] !== '!' &&
-          trimmedPiece[eqIdx - 1] !== '<' &&
-          trimmedPiece[eqIdx - 1] !== '>' &&
-          trimmedPiece[eqIdx + 1] !== '='
+          cleanPiece[eqIdx - 1] !== '=' &&
+          cleanPiece[eqIdx - 1] !== '!' &&
+          cleanPiece[eqIdx - 1] !== '<' &&
+          cleanPiece[eqIdx - 1] !== '>' &&
+          cleanPiece[eqIdx + 1] !== '='
         ) {
-          const kw = trimmedPiece.slice(0, eqIdx).trim();
+          const kw = cleanPiece.slice(0, eqIdx).trim();
           if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(kw)) {
             isKeyword = true;
             keywordName = kw;
-            valueText = trimmedPiece.slice(eqIdx + 1).trim();
+            valueText = cleanPiece.slice(eqIdx + 1).trim();
             keywords.push(kw);
           }
         }

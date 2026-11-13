@@ -118,6 +118,32 @@ test('Real Klipper File Inspection: nozzle_manager_wrapper.py', async (t) => {
     );
   });
 
+  await t.test('box_nano_wrapper.py: line 8118 remain_material.save with line-continuation backslash should have ZERO errors', async () => {
+    const filamentRackPath = path.join(extrasDir, 'filament_rack_wrapper.py');
+    if (fs.existsSync(filamentRackPath)) {
+      const rackContent = fs.readFileSync(filamentRackPath, 'utf8');
+      const rackDoc = new (vscode as any).MockTextDocument(rackContent, filamentRackPath, 'python');
+      await indexer.indexDocument(rackDoc);
+    }
+
+    const boxNanoPath = path.join(extrasDir, 'box_nano_wrapper.py');
+    if (!fs.existsSync(boxNanoPath)) return;
+    const boxNanoContent = fs.readFileSync(boxNanoPath, 'utf8');
+    const boxNanoDoc = new (vscode as any).MockTextDocument(boxNanoContent, boxNanoPath, 'python');
+    await indexer.indexDocument(boxNanoDoc);
+
+    const diags = inspector.inspectDocument(boxNanoDoc);
+    const line8118Diags = diags.filter((d) => {
+      const lineText = boxNanoDoc.lineAt(d.range.start.line).text;
+      return lineText.includes('remain_material.save');
+    });
+    assert.equal(
+      line8118Diags.length,
+      0,
+      `Line with remain_material.save must not produce duplicate argument error, but got: ${line8118Diags.map((d) => d.message).join('; ')}`
+    );
+  });
+
   inspector.dispose();
   indexer.dispose();
 });
