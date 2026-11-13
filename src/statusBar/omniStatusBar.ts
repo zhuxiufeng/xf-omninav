@@ -110,6 +110,20 @@ export class OmniStatusBar implements vscode.Disposable {
         },
       },
       {
+        label: '$(symbol-structure) Show File Structure Outline (Ctrl+F12)',
+        description: 'Floating outline of classes and methods with inherited toggle (PyCharm Style)',
+        action: async () => {
+          await vscode.commands.executeCommand('xfOmniNav.showFileStructure');
+        },
+      },
+      {
+        label: '$(call-incoming) Show Call Hierarchy (Ctrl+Alt+H)',
+        description: 'Inspect who calls this function (Callers) and who it calls (Callees)',
+        action: async () => {
+          await vscode.commands.executeCommand('xfOmniNav.showCallHierarchy');
+        },
+      },
+      {
         label: '$(refresh) Reload Window (重新加载窗口)',
         description: 'Reload editor window to apply latest extension updates immediately',
         action: async () => {

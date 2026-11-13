@@ -3,6 +3,7 @@ import { SymbolIndexer } from '../indexer/symbolIndexer';
 import { SymbolDefinition } from '../types';
 import { getOmniConfig, debounce, ICON_DATA_URIS } from '../utils';
 import { ContextResolver, GENERIC_VARIABLE_NAMES } from '../resolver/contextResolver';
+import { DocstringSynchronizer } from './docstringSynchronizer';
 
 export interface ParamSpec {
   name: string;
@@ -1196,6 +1197,13 @@ export class CallArgumentInspector implements vscode.Disposable {
     const decorations: vscode.DecorationOptions[] = [];
     const diagnostics: vscode.Diagnostic[] = [];
     const parsedCalls: ParsedCallInfo[] = [];
+
+    if (isPython && !scanLineRange) {
+      const docstringRes = DocstringSynchronizer.inspectDocstrings(document);
+      for (const d of docstringRes.diagnostics) {
+        diagnostics.push(d);
+      }
+    }
 
     const totalLines =
       typeof document.lineCount === 'number'

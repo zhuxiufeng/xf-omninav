@@ -675,6 +675,13 @@ export class SymbolIndexer implements vscode.Disposable {
   }
 
   /**
+   * Get all parsed definitions for a specific file URI.
+   */
+  public getFileSymbols(uriStr: string): SymbolDefinition[] {
+    return this.fileMap.get(uriStr) || [];
+  }
+
+  /**
    * Find definitions by container (class name) and symbol name.
    * e.g. container = "User", method = "login", or snake_case "box_action" -> "BoxAction"
    */

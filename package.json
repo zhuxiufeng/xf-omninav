@@ -2,7 +2,7 @@
   "name": "xf-omninav",
   "displayName": "XF OmniNav",
   "description": "PyCharm-grade universal IDE enhancement & navigation suite: precision symbol & inheritance navigation, heuristic call argument inspection, independent branch folding, file error badges, and status bar monitor.",
-  "version": "1.0.63",
+  "version": "1.0.64",
   "publisher": "Vivian",
   "icon": "resources/icon.png",
   "repository": {
@@ -165,6 +165,16 @@
         "category": "XF OmniNav"
       },
       {
+        "command": "xfOmniNav.showFileStructure",
+        "title": "XF OmniNav: Show File Structure Outline (Ctrl+F12)",
+        "category": "XF OmniNav"
+      },
+      {
+        "command": "xfOmniNav.showCallHierarchy",
+        "title": "XF OmniNav: Show Call Hierarchy (Ctrl+Alt+H)",
+        "category": "XF OmniNav"
+      },
+      {
         "command": "xfOmniNav.addParameterToMethod",
         "title": "XF OmniNav: Add Parameter to Method Definition"
       }
@@ -237,6 +247,18 @@
         "command": "xfOmniNav.showRecentLocations",
         "key": "ctrl+e",
         "mac": "cmd+e",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "xfOmniNav.showFileStructure",
+        "key": "ctrl+f12",
+        "mac": "cmd+f12",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "xfOmniNav.showCallHierarchy",
+        "key": "ctrl+alt+h",
+        "mac": "cmd+alt+h",
         "when": "editorTextFocus"
       }
     ],
@@ -357,6 +379,16 @@
           "type": "boolean",
           "default": true,
           "description": "Check basic literal argument types (int, str, float, bool, list, dict) against Python type annotations."
+        },
+        "xfOmniNav.enablePostfixCompletion": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable PyCharm-style postfix completions (.for, .if, .not, .return, .len, .print)."
+        },
+        "xfOmniNav.enableDocstringInspection": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check consistency between Python function parameters and docstring parameter tags."
         },
         "xfOmniNav.enableParameterInlayHints": {
           "type": "boolean",

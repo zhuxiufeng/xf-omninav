@@ -15,6 +15,10 @@ import { OmniStatusBar } from '../src/statusBar/omniStatusBar';
 import { globalHistory } from '../src/navigation/jumpHistory';
 import { StringInterner } from '../src/indexer/stringInterner';
 import { HierarchyTreeViewer } from '../src/visual/hierarchyTree';
+import { FileStructureViewer } from '../src/navigation/fileStructureViewer';
+import { PostfixCompletionProvider } from '../src/completion/postfixCompletionProvider';
+import { CallHierarchyViewer } from '../src/navigation/callHierarchyViewer';
+import { DocstringSynchronizer } from '../src/visual/docstringSynchronizer';
 
 test('CallArgumentInspector tests', async (t) => {
   const indexer = new SymbolIndexer({ subscriptions: [] } as any);
@@ -1636,6 +1640,120 @@ def caller():
     assert.equal(indexer.findExact('old_func').length, 0, 'old_func should be removed from index');
     assert.equal(indexer.findExact('new_func').length, 1, 'new_func should now be indexed');
     assert.equal(indexer.findExact('bottom_func').length, 1, 'bottom_func should remain untouched');
+  });
+
+  await t.test('FileStructureViewer: should retrieve local symbols and inherit parent class methods', async () => {
+    const baseCode = `
+class DeviceBase:
+    def base_reset(self): pass
+    def base_start(self): pass
+`;
+    indexer.indexFile((vscode as any).Uri.file('/workspace/base.py'), baseCode);
+
+    const childCode = `
+from base import DeviceBase
+
+class MotorDevice(DeviceBase):
+    def motor_step(self): pass
+`;
+    const childDoc = new (vscode as any).MockTextDocument(childCode, '/workspace/motor.py', 'python');
+    indexer.indexDocument(childDoc);
+
+    const viewer = new FileStructureViewer(indexer);
+    const symbols = indexer.getFileSymbols(childDoc.uri.toString());
+    assert.ok(symbols.some((s) => s.name === 'MotorDevice'), 'MotorDevice should be in file symbols');
+    assert.ok(symbols.some((s) => s.name === 'motor_step'), 'motor_step should be in file symbols');
+
+    const inhMethods = (viewer as any).getContainerMethods('DeviceBase');
+    assert.ok(inhMethods.some((m: any) => m.name === 'base_reset'), 'Should retrieve base_reset from parent');
+  });
+
+  await t.test('PostfixCompletionProvider: should generate python and ts/js postfix snippets', async () => {
+    const provider = new PostfixCompletionProvider();
+
+    // 1. Python .for
+    const pyDoc = new (vscode as any).MockTextDocument('    items.for', '/workspace/test_pf.py', 'python');
+    const pyItems = provider.provideCompletionItems(
+      pyDoc as any,
+      new (vscode as any).Position(0, 13),
+      {} as any,
+      {} as any
+    );
+    const forItem = pyItems.find((it) => it.label === '.for');
+    assert.ok(forItem, 'Should provide .for postfix completion');
+    assert.ok((forItem.insertText as any).value.includes('for ${1:item} in items:'));
+
+    // 2. Python .len
+    const lenDoc = new (vscode as any).MockTextDocument('    msg.len', '/workspace/test_pf.py', 'python');
+    const lenItems = provider.provideCompletionItems(
+      lenDoc as any,
+      new (vscode as any).Position(0, 11),
+      {} as any,
+      {} as any
+    );
+    const lenItem = lenItems.find((it) => it.label === '.len');
+    assert.ok(lenItem, 'Should provide .len postfix completion');
+    assert.ok((lenItem.insertText as any).value.includes('len(msg)'));
+
+    // 3. TypeScript .for
+    const tsDoc = new (vscode as any).MockTextDocument('  elements.for', '/workspace/test_pf.ts', 'typescript');
+    const tsItems = provider.provideCompletionItems(
+      tsDoc as any,
+      new (vscode as any).Position(0, 14),
+      {} as any,
+      {} as any
+    );
+    const tsForItem = tsItems.find((it) => it.label === '.for');
+    assert.ok(tsForItem, 'Should provide .for postfix completion for TypeScript');
+    assert.ok((tsForItem.insertText as any).value.includes('for (const ${1:item} of elements)'));
+  });
+
+  await t.test('CallHierarchyViewer: findCallees should extract methods called inside function body', async () => {
+    const helperCode = `
+def helper_log(msg): pass
+def helper_cleanup(): pass
+`;
+    indexer.indexFile((vscode as any).Uri.file('/workspace/helpers.py'), helperCode);
+
+    const mainCode = `
+def process_task(data):
+    helper_log("start")
+    helper_cleanup()
+    return data
+`;
+    const doc = new (vscode as any).MockTextDocument(mainCode, '/workspace/main.py', 'python');
+    indexer.indexDocument(doc);
+
+    const viewer = new CallHierarchyViewer(indexer);
+    const callees = (viewer as any).findCallees(doc, new (vscode as any).Position(1, 4), 'process_task');
+    assert.ok(callees.some((c: any) => c.name === 'helper_log'), 'Should detect helper_log as callee');
+    assert.ok(callees.some((c: any) => c.name === 'helper_cleanup'), 'Should detect helper_cleanup as callee');
+  });
+
+  await t.test('DocstringSynchronizer: should detect missing docstring params and offer QuickFix', async () => {
+    const code = `
+def send_request(host, port, timeout=5.0):
+    """
+    Send HTTP request.
+
+    :param host: target host
+    :param port: target port
+    """
+    pass
+`;
+    const doc = new (vscode as any).MockTextDocument(code, '/workspace/sync_doc.py', 'python');
+    const { diagnostics } = DocstringSynchronizer.inspectDocstrings(doc);
+    assert.equal(diagnostics.length, 1, 'Should emit 1 diagnostic for missing timeout param');
+    assert.ok(diagnostics[0].message.includes('缺少: timeout'));
+
+    const actions = codeActions.provideCodeActions(
+      doc as any,
+      diagnostics[0].range,
+      { diagnostics: [diagnostics[0]] } as any,
+      {} as any
+    );
+    const syncAction = actions.find((a) => a.title.includes('自动补齐 Docstring 参数说明'));
+    assert.ok(syncAction, `Should provide QuickFix to sync docstring: ${actions.map(a => a.title).join('; ')}`);
   });
 
   inspector.dispose();

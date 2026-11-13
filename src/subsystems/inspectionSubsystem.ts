@@ -10,6 +10,7 @@ import {
 import { DynamicTypeHoverProvider } from '../navigation/dynamicTypeHoverProvider';
 import { PythonSignatureHelpProvider } from '../navigation/pythonSignatureHelpProvider';
 import { PythonKeywordCompletionProvider } from '../navigation/pythonKeywordCompletionProvider';
+import { PostfixCompletionProvider } from '../completion/postfixCompletionProvider';
 
 /**
  * Subsystem responsible for PyCharm-grade heuristic call argument inspection,
@@ -122,6 +123,28 @@ export class InspectionSubsystem implements vscode.Disposable {
       }
     } catch (err) {
       outputChannel.appendLine(`[XF OmniNav] KeywordCompletion registration warning: ${err}`);
+    }
+
+    // 4.7 Postfix Completion Provider (PyCharm Style: .for, .if, .not, .return, .len)
+    try {
+      const postfixProvider = new PostfixCompletionProvider();
+      if (typeof vscode.languages.registerCompletionItemProvider === 'function') {
+        context.subscriptions.push(
+          vscode.languages.registerCompletionItemProvider(
+            [
+              { language: 'python' },
+              { language: 'typescript' },
+              { language: 'javascript' },
+              { language: 'typescriptreact' },
+              { language: 'javascriptreact' },
+            ],
+            postfixProvider,
+            '.'
+          )
+        );
+      }
+    } catch (err) {
+      outputChannel.appendLine(`[XF OmniNav] PostfixCompletion registration warning: ${err}`);
     }
 
     // 5. Register Inspection Commands

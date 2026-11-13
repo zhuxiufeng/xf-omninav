@@ -341,6 +341,107 @@ export class CallArgumentCodeActionProvider implements vscode.CodeActionProvider
             }
           }
         }
+      } else if (diag.code === 'docstring-param-mismatch') {
+        const missingMatch = diag.message.match(/缺少:\s*([^;)]+)/);
+        const orphanMatch = diag.message.match(/已废弃多余:\s*([^;)]+)/);
+        const missingList = missingMatch
+          ? missingMatch[1].split(',').map((s) => s.trim()).filter(Boolean)
+          : [];
+        const orphanList = orphanMatch
+          ? orphanMatch[1].split(',').map((s) => s.trim()).filter(Boolean)
+          : [];
+
+        let docStart = -1;
+        let docEnd = -1;
+        let quoteType = '';
+        let baseIndent = '    ';
+        for (
+          let l = diag.range.start.line + 1;
+          l < Math.min(document.lineCount, diag.range.start.line + 15);
+          l++
+        ) {
+          const lt = document.lineAt(l).text;
+          const tr = lt.trim();
+          if (tr.startsWith('"""')) {
+            docStart = l;
+            quoteType = '"""';
+            baseIndent = lt.match(/^\s*/)?.[0] || '    ';
+            break;
+          }
+          if (tr.startsWith("'''")) {
+            docStart = l;
+            quoteType = "'''";
+            baseIndent = lt.match(/^\s*/)?.[0] || '    ';
+            break;
+          }
+        }
+
+        if (docStart !== -1) {
+          for (let l = docStart; l < Math.min(document.lineCount, docStart + 50); l++) {
+            const lt = document.lineAt(l).text;
+            if (l === docStart && lt.trim().length > 3 && lt.trim().slice(3).includes(quoteType)) {
+              docEnd = l;
+              break;
+            }
+            if (l > docStart && lt.includes(quoteType)) {
+              docEnd = l;
+              break;
+            }
+          }
+        }
+
+        if (missingList.length > 0 && docStart !== -1 && docEnd !== -1) {
+          const action = new vscode.CodeAction(
+            `XF OmniNav: 自动补齐 Docstring 参数说明 (:param ${missingList.join(', ')}:)`,
+            vscode.CodeActionKind.QuickFix
+          );
+          action.isPreferred = true;
+          action.diagnostics = [diag];
+          const edit = new vscode.WorkspaceEdit();
+
+          let insertLine = docEnd;
+          for (let l = docStart; l < docEnd; l++) {
+            if (
+              document.lineAt(l).text.includes(':param') ||
+              document.lineAt(l).text.includes(':type')
+            ) {
+              insertLine = l + 1;
+            }
+          }
+
+          const insertLines =
+            missingList.map((p) => `${baseIndent}:param ${p}: `).join('\n') + '\n';
+          edit.insert(document.uri, new vscode.Position(insertLine, 0), insertLines);
+          action.edit = edit;
+          actions.push(action);
+        }
+
+        if (orphanList.length > 0 && docStart !== -1 && docEnd !== -1) {
+          const action = new vscode.CodeAction(
+            `XF OmniNav: 移除 Docstring 中已废弃的参数说明 (${orphanList.join(', ')})`,
+            vscode.CodeActionKind.QuickFix
+          );
+          action.diagnostics = [diag];
+          const edit = new vscode.WorkspaceEdit();
+          for (let l = docStart; l <= docEnd; l++) {
+            const lineText = document.lineAt(l).text;
+            for (const orphan of orphanList) {
+              if (
+                lineText.includes(`:param ${orphan}:`) ||
+                lineText.includes(`:type ${orphan}:`)
+              ) {
+                const lineRange =
+                  l < document.lineCount - 1
+                    ? new vscode.Range(l, 0, l + 1, 0)
+                    : document.lineAt(l).range;
+                edit.delete(document.uri, lineRange);
+                break;
+              }
+            }
+          }
+          action.edit = edit;
+          actions.push(action);
+        }
       }
     }
 

@@ -13,6 +13,8 @@ import { NavigateCommand } from '../navigation/navigateCommand';
 import { globalHistory } from '../navigation/jumpHistory';
 import { MermaidHierarchyExporter } from '../visual/mermaidExporter';
 import { HierarchyTreeViewer } from '../visual/hierarchyTree';
+import { FileStructureViewer } from '../navigation/fileStructureViewer';
+import { CallHierarchyViewer } from '../navigation/callHierarchyViewer';
 import { debounce, getOmniConfig } from '../utils';
 import { InheritanceMarker } from '../types';
 
@@ -29,6 +31,8 @@ export class NavigationSubsystem implements vscode.Disposable {
   public readonly definitionProvider: SmoothDefinitionProvider;
   public readonly implementationProvider: SmoothImplementationProvider;
   public readonly navigateCommand: NavigateCommand;
+  public readonly fileStructureViewer: FileStructureViewer;
+  public readonly callHierarchyViewer: CallHierarchyViewer;
 
   private inheritanceStatusBar: vscode.StatusBarItem;
   private cancellationTokens = new Map<string, vscode.CancellationTokenSource>();
@@ -47,6 +51,8 @@ export class NavigationSubsystem implements vscode.Disposable {
     this.definitionProvider = new SmoothDefinitionProvider(this.indexer);
     this.implementationProvider = new SmoothImplementationProvider(this.indexer);
     this.navigateCommand = new NavigateCommand(this.indexer);
+    this.fileStructureViewer = new FileStructureViewer(this.indexer);
+    this.callHierarchyViewer = new CallHierarchyViewer(this.indexer);
 
     this.inheritanceStatusBar = vscode.window.createStatusBarItem(
       vscode.StatusBarAlignment.Right,
@@ -116,6 +122,14 @@ export class NavigationSubsystem implements vscode.Disposable {
 
     registerMulti('showHierarchyTree', async (className?: string) => {
       await HierarchyTreeViewer.showHierarchyTree(this.indexer, className);
+    });
+
+    registerMulti('showFileStructure', async () => {
+      await this.fileStructureViewer.showFileStructure();
+    });
+
+    registerMulti('showCallHierarchy', async () => {
+      await this.callHierarchyViewer.showHierarchy();
     });
 
     registerMulti('toggleGutterPosition', async () => {
