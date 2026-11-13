@@ -312,6 +312,7 @@ export const window = {
     hide: () => {},
     dispose: () => {},
   }),
+  setStatusBarMessage: (_msg: string) => ({ dispose: () => {} }),
   createOutputChannel: (_name: string) => ({
     name: _name,
     append: (_val: string) => {},
@@ -341,6 +342,8 @@ export const languages = {
   createDiagnosticCollection(name?: string) {
     return {
       name,
+      get: (uri: Uri) => languages.diagnosticsMap.get(uri.toString()) || [],
+      has: (uri: Uri) => languages.diagnosticsMap.has(uri.toString()),
       set: (uri: Uri, diags: Diagnostic[]) => {
         languages.diagnosticsMap.set(uri.toString(), diags);
         languages.onDidChangeDiagnosticsEmitter.fire({ uris: [uri] });

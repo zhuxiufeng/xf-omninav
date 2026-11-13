@@ -500,6 +500,160 @@ export class SymbolIndexer implements vscode.Disposable {
   }
 
   /**
+   * Remove a single definition from all index lookups (exact, lower, acronym, prefix, container).
+   */
+  public removeSingleDefinition(uriStr: string, def: SymbolDefinition): void {
+    // 1. exactMap
+    const exactList = this.exactMap.get(def.name);
+    if (exactList) {
+      const filtered = exactList.filter(
+        (d) => !(d.uri.toString() === uriStr && d.range.start.line === def.range.start.line)
+      );
+      if (filtered.length === 0) {
+        this.exactMap.delete(def.name);
+      } else {
+        this.exactMap.set(def.name, filtered);
+      }
+    }
+
+    // 2. lowerMap
+    const lowerName = def.name.toLowerCase();
+    const lowerList = this.lowerMap.get(lowerName);
+    if (lowerList) {
+      const filtered = lowerList.filter(
+        (d) => !(d.uri.toString() === uriStr && d.range.start.line === def.range.start.line)
+      );
+      if (filtered.length === 0) {
+        this.lowerMap.delete(lowerName);
+      } else {
+        this.lowerMap.set(lowerName, filtered);
+      }
+    }
+
+    // 3. acronymMap
+    const acronym = SymbolIndexer.extractAcronym(def.name);
+    if (acronym) {
+      const acList = this.acronymMap.get(acronym);
+      if (acList) {
+        const filtered = acList.filter(
+          (d) => !(d.uri.toString() === uriStr && d.range.start.line === def.range.start.line)
+        );
+        if (filtered.length === 0) {
+          this.acronymMap.delete(acronym);
+        } else {
+          this.acronymMap.set(acronym, filtered);
+        }
+      }
+    }
+
+    // 4. prefixMap
+    if (lowerName.length >= 2) {
+      const p2 = lowerName.slice(0, 2);
+      const p2List = this.prefixMap.get(p2);
+      if (p2List) {
+        const filtered = p2List.filter(
+          (d) => !(d.uri.toString() === uriStr && d.range.start.line === def.range.start.line)
+        );
+        if (filtered.length === 0) this.prefixMap.delete(p2);
+        else this.prefixMap.set(p2, filtered);
+      }
+    }
+    if (lowerName.length >= 3) {
+      const p3 = lowerName.slice(0, 3);
+      const p3List = this.prefixMap.get(p3);
+      if (p3List) {
+        const filtered = p3List.filter(
+          (d) => !(d.uri.toString() === uriStr && d.range.start.line === def.range.start.line)
+        );
+        if (filtered.length === 0) this.prefixMap.delete(p3);
+        else this.prefixMap.set(p3, filtered);
+      }
+    }
+
+    // 5. containerSymbolMap
+    if (def.containerName) {
+      const cleanCont = def.containerName.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const symMap = this.containerSymbolMap.get(cleanCont);
+      if (symMap) {
+        const list = symMap.get(def.name);
+        if (list) {
+          const filtered = list.filter(
+            (d) => !(d.uri.toString() === uriStr && d.range.start.line === def.range.start.line)
+          );
+          if (filtered.length === 0) {
+            symMap.delete(def.name);
+            if (symMap.size === 0) {
+              this.containerSymbolMap.delete(cleanCont);
+            }
+          } else {
+            symMap.set(def.name, filtered);
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * High-performance incremental block re-indexing for large files (>2000 lines).
+   * Re-parses only the enclosing block lines [startLine, endLine] and updates index in <1ms.
+   */
+  public updateBlock(document: vscode.TextDocument, startLine: number, endLine: number): void {
+    const uriStr = document.uri.toString();
+    const existingDefs = this.fileMap.get(uriStr);
+    if (!existingDefs || existingDefs.length === 0 || document.lineCount <= 2000) {
+      this.indexDocument(document);
+      return;
+    }
+
+    const clampedStart = Math.max(0, startLine);
+    const clampedEnd = Math.min(document.lineCount - 1, endLine);
+
+    const keptDefs: SymbolDefinition[] = [];
+    for (const def of existingDefs) {
+      if (def.range.start.line >= clampedStart && def.range.end.line <= clampedEnd) {
+        this.removeSingleDefinition(uriStr, def);
+      } else {
+        keptDefs.push(def);
+      }
+    }
+
+    const blockStartPos = new vscode.Position(clampedStart, 0);
+    const blockEndLineText = document.lineAt(clampedEnd).text;
+    const blockEndPos = new vscode.Position(clampedEnd, blockEndLineText.length);
+    const blockText = document.getText(new vscode.Range(blockStartPos, blockEndPos));
+
+    const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
+    const workspaceRoot = workspaceFolder ? workspaceFolder.uri.fsPath : undefined;
+
+    const rawBlockDefs = SymbolParser.parseText(
+      blockText,
+      document.uri,
+      document.languageId,
+      workspaceRoot
+    );
+
+    const newDefs: SymbolDefinition[] = rawBlockDefs.map((d) => ({
+      ...d,
+      range: new vscode.Range(
+        d.range.start.line + clampedStart,
+        d.range.start.character,
+        d.range.end.line + clampedStart,
+        d.range.end.character
+      ),
+      selectionRange: new vscode.Range(
+        d.selectionRange.start.line + clampedStart,
+        d.selectionRange.start.character,
+        d.selectionRange.end.line + clampedStart,
+        d.selectionRange.end.character
+      ),
+    }));
+
+    this.storeDefinitions(uriStr, newDefs);
+    this.fileMap.set(uriStr, [...keptDefs, ...newDefs]);
+    this._onDidIndexUpdate.fire(this.totalSymbols);
+  }
+
+  /**
    * Find definitions by exact symbol name.
    */
   public findExact(name: string): SymbolDefinition[] {
@@ -1023,6 +1177,20 @@ export class SymbolIndexer implements vscode.Disposable {
         const timer = setTimeout(() => {
           this.pendingChanges.delete(uriStr);
           this.dirtyDocuments.delete(uriStr);
+          if (e.document.lineCount > 2000 && e.contentChanges && e.contentChanges.length > 0) {
+            let minLine = e.document.lineCount;
+            let maxLine = 0;
+            for (const ch of e.contentChanges) {
+              if (ch.range.start.line < minLine) minLine = ch.range.start.line;
+              if (ch.range.end.line > maxLine) maxLine = ch.range.end.line;
+            }
+            if (maxLine >= minLine && maxLine - minLine <= 300) {
+              const startBlock = Math.max(0, minLine - 50);
+              const endBlock = Math.min(e.document.lineCount - 1, maxLine + 50);
+              this.updateBlock(e.document, startBlock, endBlock);
+              return;
+            }
+          }
           this.indexDocument(e.document);
           this._onDidIndexUpdate.fire(this.totalSymbols);
         }, 500);

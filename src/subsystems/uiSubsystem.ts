@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { SymbolIndexer } from '../indexer/symbolIndexer';
 import { OmniStatusBar } from '../statusBar/omniStatusBar';
+import { globalHistory } from '../navigation/jumpHistory';
 import { getOmniConfig } from '../utils';
 
 /**
@@ -23,6 +24,9 @@ export class UiSubsystem implements vscode.Disposable {
   ): void {
     registerMulti('showStatusBarMenu', async () => {
       await this.omniStatusBar.showMenu();
+    });
+    registerMulti('showRecentLocations', async () => {
+      await globalHistory.showRecentLocations();
     });
     registerMulti('reloadWindow', async () => {
       await vscode.commands.executeCommand('workbench.action.reloadWindow');

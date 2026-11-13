@@ -122,6 +122,7 @@ export class CallArgumentCodeActionProvider implements vscode.CodeActionProvider
         if (matchingCall) {
           const missingMatch = diag.message.match(/缺少必填参数:\s*([^()]+)/);
           const missingParams = missingMatch ? missingMatch[1].trim() : 'param';
+          const paramList = missingParams.split(',').map((p) => p.trim());
           const action = new vscode.CodeAction(
             `XF OmniNav: 补齐必填参数 (${missingParams})`,
             vscode.CodeActionKind.QuickFix
@@ -136,6 +137,22 @@ export class CallArgumentCodeActionProvider implements vscode.CodeActionProvider
           edit.insert(document.uri, matchingCall.callArgs.closeParenPos, insertText);
           action.edit = edit;
           actions.push(action);
+
+          // Option 2: Fill with None defaults
+          const noneFillText = paramList.map((p) => `${p}=None`).join(', ');
+          const noneAction = new vscode.CodeAction(
+            `XF OmniNav: 补齐必填参数并填充 None (${noneFillText})`,
+            vscode.CodeActionKind.QuickFix
+          );
+          noneAction.diagnostics = [diag];
+          const noneEdit = new vscode.WorkspaceEdit();
+          const noneInsert =
+            matchingCall.callArgs.items.length > 0
+              ? `, ${noneFillText}`
+              : noneFillText;
+          noneEdit.insert(document.uri, matchingCall.callArgs.closeParenPos, noneInsert);
+          noneAction.edit = noneEdit;
+          actions.push(noneAction);
         }
       } else if (diag.code === 'unexpected-keyword') {
         if (matchingCall) {
@@ -156,7 +173,8 @@ export class CallArgumentCodeActionProvider implements vscode.CodeActionProvider
 
             // Typo suggestion check: Levenshtein distance <= 2
             for (const sig of matchingCall.sigInfos) {
-              for (const p of sig.params) {
+              const allParams = [...sig.params, ...(sig.keywordOnlyParams || [])];
+              for (const p of allParams) {
                 if (levenshteinDistance(p.name, unexpectedItem.keywordName || '') <= 2) {
                   const fixTypoAction = new vscode.CodeAction(
                     `XF OmniNav: 纠正为 '${p.name}='`,
@@ -259,6 +277,69 @@ export class CallArgumentCodeActionProvider implements vscode.CodeActionProvider
           edit.replace(document.uri, range, '=None');
           action.edit = edit;
           actions.push(action);
+        }
+      } else if (diag.code === 'literal-type-mismatch') {
+        if (matchingCall) {
+          const targetItem = matchingCall.callArgs.items.find(
+            (it) => it.range.contains(diag.range.start) || diag.range.contains(it.range)
+          );
+          if (targetItem) {
+            const isKw = targetItem.isKeyword && Boolean(targetItem.keywordName);
+            const rawVal = isKw ? (targetItem.valueText || '').trim() : targetItem.text.trim();
+
+            const expMatch = diag.message.match(/期望\s+([^，]+)，实际传入了\s+([a-zA-Z0-9]+)/);
+            const expType = expMatch ? expMatch[1].trim().toLowerCase() : '';
+            const actType = expMatch ? expMatch[2].trim().toLowerCase() : '';
+
+            // 1. If actual is str and expected is int/float
+            if (actType === 'str' && (expType.includes('int') || expType.includes('float'))) {
+              const unquoted = rawVal.replace(/^['"]|['"]$/g, '');
+              if (/^[+-]?[0-9.]+$/.test(unquoted)) {
+                const action = new vscode.CodeAction(
+                  `XF OmniNav: 移除引号转换为数值字面量 (${unquoted})`,
+                  vscode.CodeActionKind.QuickFix
+                );
+                action.isPreferred = true;
+                action.diagnostics = [diag];
+                const edit = new vscode.WorkspaceEdit();
+                const replacement = isKw ? `${targetItem.keywordName}=${unquoted}` : unquoted;
+                edit.replace(document.uri, targetItem.range, replacement);
+                action.edit = edit;
+                actions.push(action);
+              }
+            }
+            // 2. If actual is number and expected is str
+            else if ((actType === 'int' || actType === 'float') && expType.includes('str')) {
+              const quoted = `"${rawVal}"`;
+              const action = new vscode.CodeAction(
+                `XF OmniNav: 添加引号转换为字符串字面量 (${quoted})`,
+                vscode.CodeActionKind.QuickFix
+              );
+              action.isPreferred = true;
+              action.diagnostics = [diag];
+              const edit = new vscode.WorkspaceEdit();
+              const replacement = isKw ? `${targetItem.keywordName}=${quoted}` : quoted;
+              edit.replace(document.uri, targetItem.range, replacement);
+              action.edit = edit;
+              actions.push(action);
+            }
+            // 3. If actual is str of True/False and expected is bool
+            else if (actType === 'str' && expType.includes('bool')) {
+              const unquoted = rawVal.replace(/^['"]|['"]$/g, '');
+              const boolVal = unquoted.toLowerCase() === 'true' ? 'True' : 'False';
+              const action = new vscode.CodeAction(
+                `XF OmniNav: 转换为布尔值 (${boolVal})`,
+                vscode.CodeActionKind.QuickFix
+              );
+              action.isPreferred = true;
+              action.diagnostics = [diag];
+              const edit = new vscode.WorkspaceEdit();
+              const replacement = isKw ? `${targetItem.keywordName}=${boolVal}` : boolVal;
+              edit.replace(document.uri, targetItem.range, replacement);
+              action.edit = edit;
+              actions.push(action);
+            }
+          }
         }
       }
     }

@@ -83,6 +83,16 @@ export function activate(context: vscode.ExtensionContext) {
         inspectionSubsystem.triggerInspect(editor);
       } else {
         navigationSubsystem.onActiveEditorChanged(undefined);
+        uiSubsystem.omniStatusBar.setActiveDocumentErrors(0);
+      }
+    }),
+
+    inspectionSubsystem.inspector.onDidInspectDocument((evt) => {
+      if (
+        vscode.window.activeTextEditor &&
+        vscode.window.activeTextEditor.document.uri.toString() === evt.uri.toString()
+      ) {
+        uiSubsystem.omniStatusBar.setActiveDocumentErrors(evt.errorCount);
       }
     }),
 

@@ -41,6 +41,9 @@ export interface CallArgumentResult {
   keywords: string[];
   items: RawArgumentItem[];
   hasUnpack: boolean;
+  hasVarargsUnpack: boolean;
+  hasVarkwargsUnpack: boolean;
+  positionalCountBeforeUnpack: number;
   argRange: vscode.Range;
   openParenPos: vscode.Position;
   closeParenPos: vscode.Position;
@@ -366,6 +369,8 @@ export class CallArgumentInspector implements vscode.Disposable {
   private lastDecorations = new Map<string, vscode.DecorationOptions[]>();
   private lastCalls = new Map<string, ParsedCallInfo[]>();
   private fullAuditTimers = new Map<string, NodeJS.Timeout>();
+  private _onDidInspectDocument = new vscode.EventEmitter<{ uri: vscode.Uri; errorCount: number }>();
+  public readonly onDidInspectDocument = this._onDidInspectDocument.event;
 
   private userWhitelistSet: Set<string> = new Set(DEFAULT_CONFIGURED_POLYMORPHIC_METHODS);
 
@@ -964,6 +969,9 @@ export class CallArgumentInspector implements vscode.Disposable {
         keywords: [],
         items: [],
         hasUnpack: false,
+        hasVarargsUnpack: false,
+        hasVarkwargsUnpack: false,
+        positionalCountBeforeUnpack: 0,
         argRange,
         openParenPos,
         closeParenPos,
@@ -1031,6 +1039,10 @@ export class CallArgumentInspector implements vscode.Disposable {
     let positionalCount = 0;
     const keywords: string[] = [];
     let hasUnpack = false;
+    let hasVarargsUnpack = false;
+    let hasVarkwargsUnpack = false;
+    let positionalCountBeforeUnpack = 0;
+    let seenVarargsUnpack = false;
 
     const offsetToPos = (offset: number): vscode.Position => {
       let l = lineIdx;
@@ -1075,8 +1087,13 @@ export class CallArgumentInspector implements vscode.Disposable {
         removalRange = itemRange;
       }
 
-      if (trimmedPiece.startsWith('*') || trimmedPiece.startsWith('**')) {
+      if (trimmedPiece.startsWith('**')) {
         hasUnpack = true;
+        hasVarkwargsUnpack = true;
+      } else if (trimmedPiece.startsWith('*')) {
+        hasUnpack = true;
+        hasVarargsUnpack = true;
+        seenVarargsUnpack = true;
       }
 
       let isKeyword = false;
@@ -1108,6 +1125,9 @@ export class CallArgumentInspector implements vscode.Disposable {
 
       if (!isKeyword && !trimmedPiece.startsWith('*')) {
         positionalCount++;
+        if (!seenVarargsUnpack) {
+          positionalCountBeforeUnpack++;
+        }
       }
 
       items.push({
@@ -1125,6 +1145,9 @@ export class CallArgumentInspector implements vscode.Disposable {
       keywords,
       items,
       hasUnpack,
+      hasVarargsUnpack,
+      hasVarkwargsUnpack,
+      positionalCountBeforeUnpack,
       argRange,
       openParenPos,
       closeParenPos,
@@ -1314,7 +1337,7 @@ export class CallArgumentInspector implements vscode.Disposable {
 
         const openParenChar = match.index + match[0].lastIndexOf('(');
         const callArgs = this.parseCallArguments(document, lineIdx, openParenChar, getLine);
-        if (!callArgs || callArgs.hasUnpack) {
+        if (!callArgs) {
           continue;
         }
 
@@ -1617,12 +1640,18 @@ export class CallArgumentInspector implements vscode.Disposable {
         const effectivePositionalCount = hasExplicitSelf
           ? Math.max(0, callArgs.positionalCount - 1)
           : callArgs.positionalCount;
+        const effectivePositionalBeforeUnpack = hasExplicitSelf
+          ? Math.max(0, callArgs.positionalCountBeforeUnpack - 1)
+          : callArgs.positionalCountBeforeUnpack;
+        const posCountToCheck = callArgs.hasVarargsUnpack
+          ? effectivePositionalBeforeUnpack
+          : effectivePositionalCount;
 
         // 1. Check: Too many positional arguments
         let allRejectExcess = true;
         let maxAllowed = 0;
         for (const s of sigInfos) {
-          if (s.hasVarargs || effectivePositionalCount <= s.maxPositional) {
+          if (s.hasVarargs || posCountToCheck <= s.maxPositional) {
             allRejectExcess = false;
             break;
           }
@@ -1631,8 +1660,8 @@ export class CallArgumentInspector implements vscode.Disposable {
           }
         }
 
-        if (allRejectExcess && effectivePositionalCount > maxAllowed) {
-          const positionalItems = callArgs.items.filter((it) => !it.isKeyword);
+        if (allRejectExcess && posCountToCheck > maxAllowed) {
+          const positionalItems = callArgs.items.filter((it) => !it.isKeyword && !it.text.startsWith('*'));
           const excessSliceStart = hasExplicitSelf ? maxAllowed + 1 : maxAllowed;
           const excessItems = positionalItems.slice(excessSliceStart);
           const targetRange =
@@ -1646,7 +1675,7 @@ export class CallArgumentInspector implements vscode.Disposable {
           let kwOnlyParamName = '';
           for (const s of sigInfos) {
             if (s.keywordOnlyParams && s.keywordOnlyParams.length > 0) {
-              const kwIndex = effectivePositionalCount - maxAllowed - 1;
+              const kwIndex = posCountToCheck - maxAllowed - 1;
               if (kwIndex >= 0 && kwIndex < s.keywordOnlyParams.length) {
                 isKwOnlyViolation = true;
                 kwOnlyParamName = s.keywordOnlyParams[kwIndex].name;
@@ -1658,7 +1687,7 @@ export class CallArgumentInspector implements vscode.Disposable {
           const diagCode = isKwOnlyViolation ? 'keyword-only-as-positional' : 'too-many-arguments';
           const errorMsg = isKwOnlyViolation
             ? `'${kwOnlyParamName}' 为仅关键字形参 (PEP 3102)，必须使用 '${kwOnlyParamName}=...' 关键字传参`
-            : `'${methodName}' 最多接收 ${maxAllowed} 个位置参数，但实际传入了 ${effectivePositionalCount} 个 (PyCharm 风格参数检查)`;
+            : `'${methodName}' 最多接收 ${maxAllowed} 个位置参数，但实际传入了 ${posCountToCheck} 个 (PyCharm 风格参数检查)`;
           const diag = new vscode.Diagnostic(
             targetRange,
             `XF OmniNav: ${errorMsg}`,
@@ -1674,13 +1703,13 @@ export class CallArgumentInspector implements vscode.Disposable {
               hoverMessage: new vscode.MarkdownString(
                 isKwOnlyViolation
                   ? `**XF OmniNav: 仅关键字参数错误 (PEP 3102 / PyCharm 风格)**\n\n\`${methodName}\` 中的形参 **${kwOnlyParamName}** 声明为仅关键字形参，不能以位置形式传参。`
-                  : `**XF OmniNav: 参数错误 (PyCharm 风格)**\n\n\`${methodName}\` 最多接收 **${maxAllowed}** 个位置参数，但实际传入了 **${effectivePositionalCount}** 个。`
+                  : `**XF OmniNav: 参数错误 (PyCharm 风格)**\n\n\`${methodName}\` 最多接收 **${maxAllowed}** 个位置参数，但实际传入了 **${posCountToCheck}** 个。`
               ),
               renderOptions: {
                 after: {
                   contentText: isKwOnlyViolation
                     ? ` ❗'${kwOnlyParamName}' 必须使用关键字形式传参`
-                    : ` ❗参数错误: 期望 ≤${maxAllowed} 个，实传 ${effectivePositionalCount} 个`,
+                    : ` ❗参数错误: 期望 ≤${maxAllowed} 个，实传 ${posCountToCheck} 个`,
                   color: '#ff4d4f',
                   fontWeight: 'bold',
                   fontStyle: 'normal',
@@ -1691,8 +1720,8 @@ export class CallArgumentInspector implements vscode.Disposable {
           }
         }
 
-        // 2. Check: Missing required arguments
-        if (enableMissingCheck) {
+        // 2. Check: Missing required arguments (skipped if *args or **kwargs unpack present)
+        if (enableMissingCheck && !callArgs.hasUnpack) {
           let allMissingRequired = true;
           const missingPerSig: string[][] = [];
 
@@ -1913,6 +1942,91 @@ export class CallArgumentInspector implements vscode.Disposable {
             }
           }
         }
+
+        // 7. Check: Lite Literal Type Checking (PyCharm-style gentle warning for int/str/float/bool/list/dict literals)
+        const enableLiteralTypeCheck = getOmniConfig<boolean>('enableLiteralTypeInspection', true);
+        if (enableLiteralTypeCheck && isPython) {
+          let positionalIndex = 0;
+          for (let itIdx = 0; itIdx < callArgs.items.length; itIdx++) {
+            const item = callArgs.items[itIdx];
+            if (item.text.startsWith('*')) continue;
+
+            const isKw = item.isKeyword && Boolean(item.keywordName);
+            const valText = isKw ? (item.valueText || '').trim() : item.text.trim();
+            if (!valText) continue;
+
+            const literalKind = this.detectLiteralKind(valText);
+            if (!literalKind) {
+              if (!isKw) positionalIndex++;
+              continue;
+            }
+
+            const currentPosIndex = positionalIndex;
+            if (!isKw) positionalIndex++;
+
+            let hasAtLeastOneParamWithAnnotation = false;
+            let allCandidateSigsReject = true;
+            let expectedParamName = '';
+            let expectedTypeDisplay = '';
+
+            for (const sig of sigInfos) {
+              let param: ParamSpec | undefined;
+              if (isKw) {
+                param =
+                  sig.params.find((p) => p.name === item.keywordName) ||
+                  sig.keywordOnlyParams?.find((p) => p.name === item.keywordName);
+              } else {
+                const effIndex = hasExplicitSelf ? currentPosIndex - 1 : currentPosIndex;
+                if (effIndex >= 0 && effIndex < sig.params.length) {
+                  param = sig.params[effIndex];
+                }
+              }
+
+              if (param && param.type) {
+                hasAtLeastOneParamWithAnnotation = true;
+                expectedParamName = param.name;
+                expectedTypeDisplay = param.type;
+                if (this.isLiteralTypeCompatible(param.type, literalKind)) {
+                  allCandidateSigsReject = false;
+                  break;
+                }
+              } else {
+                allCandidateSigsReject = false;
+                break;
+              }
+            }
+
+            if (hasAtLeastOneParamWithAnnotation && allCandidateSigsReject) {
+              const targetRange = item.range;
+              const diag = new vscode.Diagnostic(
+                targetRange,
+                `XF OmniNav: 实参类型不匹配: 形参 '${expectedParamName}' 期望 ${expectedTypeDisplay}，实际传入了 ${literalKind} 字面量 '${valText}' (PyCharm 风格类型检查)`,
+                vscode.DiagnosticSeverity.Warning
+              );
+              diag.source = 'XF OmniNav';
+              diag.code = 'literal-type-mismatch';
+              diagnostics.push(diag);
+
+              if (enableHighlight) {
+                decorations.push({
+                  range: targetRange,
+                  hoverMessage: new vscode.MarkdownString(
+                    `**XF OmniNav: 实参类型不匹配 (PyCharm 风格)**\n\n形参 **${expectedParamName}** 声明为 \`${expectedTypeDisplay}\`，但实际传入了 **${literalKind}** 字面量 \`${valText}\`。`
+                  ),
+                  renderOptions: {
+                    after: {
+                      contentText: ` ⚠️类型不匹配: 期望 ${expectedTypeDisplay}，实传 ${literalKind}`,
+                      color: '#faad14',
+                      fontWeight: 'normal',
+                      fontStyle: 'normal',
+                      margin: '0 0 0 8px',
+                    },
+                  },
+                });
+              }
+            }
+          }
+        }
       }
     }
 
@@ -1940,12 +2054,14 @@ export class CallArgumentInspector implements vscode.Disposable {
       this.diagnosticCollection.set(document.uri, mergedDiags);
       this.lastDecorations.set(document.uri.toString(), mergedDecors);
       this.applyDecorationsToDocument(document.uri, mergedDecors);
+      this._onDidInspectDocument.fire({ uri: document.uri, errorCount: mergedDiags.length });
       return mergedDiags;
     } else {
       this.lastCalls.set(document.uri.toString(), parsedCalls);
       this.diagnosticCollection.set(document.uri, diagnostics);
       this.lastDecorations.set(document.uri.toString(), decorations);
       this.applyDecorationsToDocument(document.uri, decorations);
+      this._onDidInspectDocument.fire({ uri: document.uri, errorCount: diagnostics.length });
       return diagnostics;
     }
   }
@@ -2063,6 +2179,145 @@ export class CallArgumentInspector implements vscode.Disposable {
     }
   }
 
+  /**
+   * Detects whether an expression text is a basic Python literal and returns its type.
+   */
+  public detectLiteralKind(
+    val: string
+  ): 'int' | 'float' | 'str' | 'bool' | 'list' | 'dict' | 'tuple' | 'None' | null {
+    const trimmed = val.trim();
+    if (!trimmed) return null;
+    if (trimmed === 'True' || trimmed === 'False') return 'bool';
+    if (trimmed === 'None') return 'None';
+    if (/^[+-]?[0-9]+$/.test(trimmed) || /^0[xXoObB][0-9a-fA-F_]+$/.test(trimmed)) return 'int';
+    if (/^[+-]?(?:[0-9]+\.[0-9]*|[0-9]*\.[0-9]+)(?:[eE][+-]?[0-9]+)?$/.test(trimmed)) return 'float';
+    if (/^([rfbRFB]?['"])([\s\S]*)\1$/.test(trimmed) || /^(['"]{3})([\s\S]*)\1$/.test(trimmed)) return 'str';
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) return 'list';
+    if (trimmed.startsWith('{') && trimmed.endsWith('}') && (trimmed.includes(':') || trimmed === '{}')) return 'dict';
+    if (trimmed.startsWith('(') && trimmed.endsWith(')')) return 'tuple';
+    return null;
+  }
+
+  /**
+   * Verifies if a detected literal type is compatible with parameter's annotated type.
+   */
+  public isLiteralTypeCompatible(annotatedType: string, literalKind: string): boolean {
+    const clean = annotatedType.replace(/\s+/g, ' ').trim();
+    if (!clean) return true;
+
+    // Any or unknown type matches everything
+    if (clean === 'Any' || clean.includes('Any')) return true;
+
+    // Handle Optional[...] -> Union[..., None]
+    if (clean.startsWith('Optional[') && clean.endsWith(']')) {
+      if (literalKind === 'None') return true;
+      const inner = clean.slice(9, -1).trim();
+      return this.isLiteralTypeCompatible(inner, literalKind);
+    }
+
+    // Handle Union[...] -> Union[T1, T2]
+    if (clean.startsWith('Union[') && clean.endsWith(']')) {
+      const inner = clean.slice(6, -1);
+      const parts = inner.split(',').map((p) => p.trim());
+      return parts.some((p) => this.isLiteralTypeCompatible(p, literalKind));
+    }
+
+    // Handle PEP 604 pipe unions: e.g. int | str | None
+    if (clean.includes('|')) {
+      const parts = clean.split('|').map((p) => p.trim());
+      return parts.some((p) => this.isLiteralTypeCompatible(p, literalKind));
+    }
+
+    // None literal
+    if (literalKind === 'None') {
+      return clean === 'None' || clean === 'NoneType';
+    }
+
+    // Only strictly validate recognized basic types
+    const isBasicType = /^(int|float|str|bool|list|dict|tuple|set|bytes)(?:\[.*\])?$/i.test(clean);
+    if (!isBasicType) {
+      return true;
+    }
+
+    const norm = clean.toLowerCase();
+    if (norm.startsWith('int')) {
+      return literalKind === 'int';
+    }
+    if (norm.startsWith('float')) {
+      return literalKind === 'float' || literalKind === 'int';
+    }
+    if (norm.startsWith('str')) {
+      return literalKind === 'str';
+    }
+    if (norm.startsWith('bool')) {
+      return literalKind === 'bool';
+    }
+    if (norm.startsWith('list')) {
+      return literalKind === 'list';
+    }
+    if (norm.startsWith('dict')) {
+      return literalKind === 'dict';
+    }
+    if (norm.startsWith('tuple')) {
+      return literalKind === 'tuple';
+    }
+
+    return true;
+  }
+
+  /**
+   * Navigate to the next or previous argument/type mismatch error in active editor.
+   */
+  public navigateToError(editor: vscode.TextEditor, direction: 'next' | 'prev'): boolean {
+    if (!editor || !editor.document) return false;
+    const diags: vscode.Diagnostic[] =
+      typeof this.diagnosticCollection.get === 'function'
+        ? this.diagnosticCollection.get(editor.document.uri) || []
+        : typeof (vscode.languages as any).getDiagnostics === 'function'
+        ? (vscode.languages as any).getDiagnostics(editor.document.uri) || []
+        : [];
+    const errorDiags = diags.filter(
+      (d) =>
+        d.source === 'XF OmniNav' &&
+        (d.severity === vscode.DiagnosticSeverity.Error ||
+          d.severity === vscode.DiagnosticSeverity.Warning)
+    );
+    if (errorDiags.length === 0) {
+      vscode.window.showInformationMessage('XF OmniNav: 当前文件未发现参数或类型异常 (All Clean)');
+      return false;
+    }
+
+    errorDiags.sort((a, b) => {
+      if (a.range.start.line !== b.range.start.line) {
+        return a.range.start.line - b.range.start.line;
+      }
+      return a.range.start.character - b.range.start.character;
+    });
+
+    const cursorPos = editor.selection.active;
+    const isAfter = (posA: vscode.Position, posB: vscode.Position) =>
+      posA.line > posB.line || (posA.line === posB.line && posA.character > posB.character);
+    const isBefore = (posA: vscode.Position, posB: vscode.Position) =>
+      posA.line < posB.line || (posA.line === posB.line && posA.character < posB.character);
+
+    let targetDiag: vscode.Diagnostic;
+
+    if (direction === 'next') {
+      targetDiag = errorDiags.find((d) => isAfter(d.range.start, cursorPos)) || errorDiags[0];
+    } else {
+      const prevDiags = errorDiags.filter((d) => isBefore(d.range.start, cursorPos));
+      targetDiag =
+        prevDiags.length > 0 ? prevDiags[prevDiags.length - 1] : errorDiags[errorDiags.length - 1];
+    }
+
+    editor.selection = new vscode.Selection(targetDiag.range.start, targetDiag.range.end);
+    editor.revealRange(targetDiag.range, vscode.TextEditorRevealType.InCenter);
+    if (typeof vscode.window.setStatusBarMessage === 'function') {
+      vscode.window.setStatusBarMessage(`XF OmniNav: ${targetDiag.message}`, 4000);
+    }
+    return true;
+  }
+
   public clearDocument(uri: vscode.Uri): void {
     this.diagnosticCollection.delete(uri);
     this.lastDecorations.delete(uri.toString());
@@ -2095,6 +2350,7 @@ export class CallArgumentInspector implements vscode.Disposable {
     }
     this.fullAuditTimers.clear();
     this.clearAll();
+    this._onDidInspectDocument.dispose();
     for (const d of this.disposables) {
       d.dispose();
     }

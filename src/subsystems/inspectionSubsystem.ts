@@ -194,6 +194,20 @@ export class InspectionSubsystem implements vscode.Disposable {
       }
     });
 
+    registerMulti('nextCallArgumentError', () => {
+      const editor = vscode.window.activeTextEditor;
+      if (editor) {
+        this.inspector.navigateToError(editor, 'next');
+      }
+    });
+
+    registerMulti('prevCallArgumentError', () => {
+      const editor = vscode.window.activeTextEditor;
+      if (editor) {
+        this.inspector.navigateToError(editor, 'prev');
+      }
+    });
+
     registerMulti('addParameterToMethod', async (args: any) => {
       await addParameterToMethodDefinition(args);
     });

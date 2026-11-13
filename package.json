@@ -2,7 +2,7 @@
   "name": "xf-omninav",
   "displayName": "XF OmniNav",
   "description": "PyCharm-grade universal IDE enhancement & navigation suite: precision symbol & inheritance navigation, heuristic call argument inspection, independent branch folding, file error badges, and status bar monitor.",
-  "version": "1.0.62",
+  "version": "1.0.63",
   "publisher": "Vivian",
   "icon": "resources/icon.png",
   "repository": {
@@ -150,6 +150,21 @@
         "category": "XF OmniNav"
       },
       {
+        "command": "xfOmniNav.nextCallArgumentError",
+        "title": "XF OmniNav: Jump to Next Parameter / Type Error (F2)",
+        "category": "XF OmniNav"
+      },
+      {
+        "command": "xfOmniNav.prevCallArgumentError",
+        "title": "XF OmniNav: Jump to Previous Parameter / Type Error (Shift+F2)",
+        "category": "XF OmniNav"
+      },
+      {
+        "command": "xfOmniNav.showRecentLocations",
+        "title": "XF OmniNav: Show Recent Locations / Jump Stack (PyCharm Style)",
+        "category": "XF OmniNav"
+      },
+      {
         "command": "xfOmniNav.addParameterToMethod",
         "title": "XF OmniNav: Add Parameter to Method Definition"
       }
@@ -206,6 +221,22 @@
         "command": "xfOmniNav.navigateBack",
         "key": "alt+left",
         "mac": "cmd+[",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "xfOmniNav.nextCallArgumentError",
+        "key": "f2",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "xfOmniNav.prevCallArgumentError",
+        "key": "shift+f2",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "xfOmniNav.showRecentLocations",
+        "key": "ctrl+e",
+        "mac": "cmd+e",
         "when": "editorTextFocus"
       }
     ],
@@ -321,6 +352,11 @@
           "type": "boolean",
           "default": true,
           "description": "Check for unexpected keyword arguments in Python calls (PyCharm-style)."
+        },
+        "xfOmniNav.enableLiteralTypeInspection": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check basic literal argument types (int, str, float, bool, list, dict) against Python type annotations."
         },
         "xfOmniNav.enableParameterInlayHints": {
           "type": "boolean",

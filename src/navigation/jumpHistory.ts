@@ -70,6 +70,76 @@ export class JumpHistory {
       return false;
     }
   }
+
+  /**
+   * Get all recorded navigation history items (newest first).
+   */
+  public getHistory(): NavigationHistoryItem[] {
+    return [...this.stack].reverse();
+  }
+
+  /**
+   * Show PyCharm-style Recent Locations QuickPick (Ctrl+E / Recent Locations).
+   */
+  public async showRecentLocations(): Promise<void> {
+    const history = this.getHistory();
+    if (history.length === 0) {
+      vscode.window.showInformationMessage('XF OmniNav: 暂无最近跳转历史 (Recent Locations is empty)');
+      return;
+    }
+
+    interface RecentLocationQuickPickItem extends vscode.QuickPickItem {
+      item: NavigationHistoryItem;
+    }
+
+    const path = await import('path');
+    const pickItems: RecentLocationQuickPickItem[] = [];
+
+    for (const h of history) {
+      const fsPath = h.uri.fsPath;
+      const basename = path.basename(fsPath);
+      const lineNum = h.position.line;
+
+      let linePreview = '';
+      try {
+        const openDoc = vscode.workspace.textDocuments.find(
+          (d) => d.uri.toString() === h.uri.toString()
+        );
+        if (openDoc && lineNum < openDoc.lineCount) {
+          linePreview = openDoc.lineAt(lineNum).text.trim();
+        } else {
+          linePreview = vscode.workspace.asRelativePath(h.uri);
+        }
+      } catch {
+        linePreview = vscode.workspace.asRelativePath(h.uri);
+      }
+
+      pickItems.push({
+        label: `$(history) ${basename}`,
+        description: `Line ${lineNum + 1}`,
+        detail: linePreview ? `  ${linePreview}` : undefined,
+        item: h,
+      });
+    }
+
+    const picked = await vscode.window.showQuickPick(pickItems, {
+      placeHolder: '选择要跳转的最近位置 (Recent Locations / Jump Stack)',
+      matchOnDescription: true,
+      matchOnDetail: true,
+    });
+
+    if (picked) {
+      try {
+        const doc = await vscode.workspace.openTextDocument(picked.item.uri);
+        const editor = await vscode.window.showTextDocument(doc);
+        editor.selection = new vscode.Selection(picked.item.position, picked.item.position);
+        editor.revealRange(
+          new vscode.Range(picked.item.position, picked.item.position),
+          vscode.TextEditorRevealType.InCenter
+        );
+      } catch {}
+    }
+  }
 }
 
 export const globalHistory = new JumpHistory();

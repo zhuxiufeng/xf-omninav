@@ -12,6 +12,7 @@ import {
 import { SymbolParser } from '../src/indexer/symbolParser';
 import { ContextResolver } from '../src/resolver/contextResolver';
 import { OmniStatusBar } from '../src/statusBar/omniStatusBar';
+import { globalHistory } from '../src/navigation/jumpHistory';
 import { StringInterner } from '../src/indexer/stringInterner';
 import { HierarchyTreeViewer } from '../src/visual/hierarchyTree';
 
@@ -1467,6 +1468,174 @@ def process(remain):
     statusBar.update();
     assert.ok(statusBar, 'OmniStatusBar should be instantiated successfully');
     statusBar.dispose();
+  });
+
+  await t.test('Safe Unpack Excess Checking: should detect positional overflow before *args when callee has no varargs', async () => {
+    const serviceDef = `
+def fixed_target(a, b):
+    pass
+`;
+    indexer.indexFile((vscode as any).Uri.file('/workspace/safe_unpack.py'), serviceDef);
+
+    const callerText = `
+def caller(extra):
+    fixed_target(1, 2, 3, *extra)
+`;
+    const doc = new (vscode as any).MockTextDocument(callerText, '/workspace/caller_safe_unpack.py', 'python');
+    const diagnostics = inspector.inspectDocument(doc);
+    const excessDiag = diagnostics.find((d) => d.code === 'too-many-arguments');
+    assert.ok(excessDiag, 'Should flag too-many-arguments when positional args before *extra exceed maxPositional');
+    assert.ok(excessDiag.message.includes('最多接收 2 个位置参数'));
+  });
+
+  await t.test('Safe Unpack Excess Checking: should detect explicit unknown keyword argument when callee has no varkwargs', async () => {
+    const serviceDef = `
+def kw_target(a, b=1):
+    pass
+`;
+    indexer.indexFile((vscode as any).Uri.file('/workspace/kw_unpack.py'), serviceDef);
+
+    const callerText = `
+def caller(extra_dict):
+    kw_target(1, bad_kw=99, **extra_dict)
+`;
+    const doc = new (vscode as any).MockTextDocument(callerText, '/workspace/caller_kw_unpack.py', 'python');
+    const diagnostics = inspector.inspectDocument(doc);
+    const kwDiag = diagnostics.find((d) => d.code === 'unexpected-keyword');
+    assert.ok(kwDiag, 'Should flag unexpected-keyword bad_kw even when **extra_dict is unpacked');
+    assert.ok(kwDiag.message.includes('bad_kw'));
+  });
+
+  await t.test('Safe Unpack: should safely skip missing required arguments when unpack is present', async () => {
+    const serviceDef = `
+def required_target(a, b, c):
+    pass
+`;
+    indexer.indexFile((vscode as any).Uri.file('/workspace/safe_missing_unpack.py'), serviceDef);
+
+    const callerText = `
+def caller(args_tuple):
+    required_target(1, *args_tuple)
+`;
+    const doc = new (vscode as any).MockTextDocument(callerText, '/workspace/caller_missing_unpack.py', 'python');
+    const diagnostics = inspector.inspectDocument(doc);
+    const missingDiag = diagnostics.find((d) => d.code === 'missing-arguments');
+    assert.ok(!missingDiag, 'Should safely skip missing-arguments check when *args_tuple is present');
+  });
+
+  await t.test('Lite Literal Type Checking: should flag type mismatch on basic literals with PEP 484 annotations', async () => {
+    const serviceDef = `
+class ServiceClient:
+    def connect(self, host: str, port: int, ssl: bool = False, tags: list = None):
+        pass
+`;
+    indexer.indexFile((vscode as any).Uri.file('/workspace/service_client.py'), serviceDef);
+
+    const callerText = `
+def run():
+    client = ServiceClient()
+    client.connect("127.0.0.1", "8080", ssl="true", tags={})
+`;
+    const doc = new (vscode as any).MockTextDocument(callerText, '/workspace/caller_type_mismatch.py', 'python');
+    const diagnostics = inspector.inspectDocument(doc);
+
+    const portDiag = diagnostics.find((d) => d.message.includes("形参 'port' 期望 int，实际传入了 str 字面量 '\"8080\"'"));
+    assert.ok(portDiag, `Should flag port type mismatch (expected int, actual str "8080"): ${diagnostics.map(d => d.message).join('; ')}`);
+    assert.equal(portDiag.severity, (vscode as any).DiagnosticSeverity.Warning);
+
+    const sslDiag = diagnostics.find((d) => d.message.includes("形参 'ssl' 期望 bool，实际传入了 str 字面量 '\"true\"'"));
+    assert.ok(sslDiag, `Should flag ssl type mismatch: ${diagnostics.map(d => d.message).join('; ')}`);
+
+    const tagsDiag = diagnostics.find((d) => d.message.includes("形参 'tags' 期望 list，实际传入了 dict 字面量 '{}'"));
+    assert.ok(tagsDiag, `Should flag tags type mismatch: ${diagnostics.map(d => d.message).join('; ')}`);
+  });
+
+  await t.test('QuickFix Code Actions: should offer 1-click fixes for literal type mismatch and None default fill', async () => {
+    const serviceDef = `
+def listen(host: str, port: int):
+    pass
+`;
+    indexer.indexFile((vscode as any).Uri.file('/workspace/listener.py'), serviceDef);
+
+    const callerText = `
+def run():
+    listen("0.0.0.0", "9000")
+`;
+    const doc = new (vscode as any).MockTextDocument(callerText, '/workspace/caller_qf.py', 'python');
+    const diagnostics = inspector.inspectDocument(doc);
+    const portDiag = diagnostics.find((d) => d.code === 'literal-type-mismatch');
+    assert.ok(portDiag, 'Should generate literal-type-mismatch diagnostic');
+
+    const provider = new CallArgumentCodeActionProvider(inspector, indexer);
+    const actions = provider.provideCodeActions(
+      doc as any,
+      portDiag.range,
+      { diagnostics: [portDiag] } as any,
+      {} as any
+    );
+    const unquoteAction = actions.find((a) => a.title.includes('移除引号转换为数值字面量 (9000)'));
+    assert.ok(unquoteAction, `Should provide QuickFix to unquote: ${actions.map(a => a.title).join('; ')}`);
+  });
+
+  await t.test('Error Navigation: should navigate to next and prev argument error', async () => {
+    const callerText = `
+def caller():
+    listen("0.0.0.0", "9000")
+    listen("1.1.1.1", "9001")
+`;
+    const doc = new (vscode as any).MockTextDocument(callerText, '/workspace/caller_nav.py', 'python');
+    inspector.inspectDocument(doc);
+
+    const mockEditor: any = {
+      document: doc,
+      selection: new (vscode as any).Selection(new (vscode as any).Position(0, 0), new (vscode as any).Position(0, 0)),
+      revealRange: () => {},
+    };
+
+    const navResult = inspector.navigateToError(mockEditor, 'next');
+    assert.ok(navResult, 'Should navigate to next error');
+    assert.ok(mockEditor.selection.start.line >= 2, 'Selection should move to line with diagnostic');
+
+    const prevResult = inspector.navigateToError(mockEditor, 'prev');
+    assert.ok(prevResult, 'Should navigate to prev error');
+  });
+
+  await t.test('JumpHistory & Recent Locations: should track and return location stack', async () => {
+    const historyDoc = new (vscode as any).MockTextDocument('def test(): pass', '/workspace/recent.py', 'python');
+    const mockEditor: any = {
+      document: historyDoc,
+      selection: new (vscode as any).Selection(new (vscode as any).Position(5, 2), new (vscode as any).Position(5, 2)),
+    };
+    globalHistory.pushCurrentLocation(mockEditor);
+    const items = globalHistory.getHistory();
+    assert.ok(items.length > 0, 'Recent locations should contain pushed item');
+    assert.equal(items[0].position.line, 5);
+  });
+
+  await t.test('Incremental Block Re-indexing: updateBlock should re-index sub-block without full document re-scan', async () => {
+    const lines = [];
+    for (let i = 0; i < 2100; i++) {
+      if (i === 100) lines.push('def old_func(): pass');
+      else if (i === 2000) lines.push('def bottom_func(): pass');
+      else lines.push(`x_${i} = ${i}`);
+    }
+    const bigDoc = new (vscode as any).MockTextDocument(lines.join('\n'), '/workspace/big_file.py', 'python');
+    indexer.indexDocument(bigDoc);
+
+    assert.ok(indexer.findExact('old_func').length > 0, 'old_func should be indexed initially');
+    assert.ok(indexer.findExact('bottom_func').length > 0, 'bottom_func should be indexed initially');
+
+    lines[100] = 'def new_func(): pass';
+    const updatedDoc = new (vscode as any).MockTextDocument(lines.join('\n'), '/workspace/big_file.py', 'python');
+
+    const start = performance.now();
+    indexer.updateBlock(updatedDoc, 95, 105);
+    const duration = performance.now() - start;
+
+    assert.ok(duration < 50, `updateBlock should complete quickly, took ${duration.toFixed(2)}ms`);
+    assert.equal(indexer.findExact('old_func').length, 0, 'old_func should be removed from index');
+    assert.equal(indexer.findExact('new_func').length, 1, 'new_func should now be indexed');
+    assert.equal(indexer.findExact('bottom_func').length, 1, 'bottom_func should remain untouched');
   });
 
   inspector.dispose();
