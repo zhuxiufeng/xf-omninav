@@ -1404,6 +1404,46 @@ def handle(custom_client):
     assert.ok(!diag, `Unknown receiver custom_client should NOT be matched to UnrelatedWorker, got: ${diag?.message}`);
   });
 
+  await t.test('Screenshot Reproduction 4: modifying function interface should dynamically clear unknown keyword argument', async () => {
+    // 1. Initial version: method without retrude_times parameter
+    const initialCode = `
+class BoxAction:
+    def process(self, tnn_content):
+        ret = self._box_retrude_material(tnn_content["addr"], tnn_content["num"], retrude_times=1)
+        return ret
+
+    def _box_retrude_material(self, addr, num):
+        pass
+`;
+    const docUri = (vscode as any).Uri.file('/workspace/dynamic_box_nano.py');
+    const doc1 = new (vscode as any).MockTextDocument(initialCode, docUri.fsPath, 'python');
+    indexer.indexDocument(doc1);
+
+    // Initial inspection: retrude_times is unknown, should flag error
+    const diags1 = inspector.inspectDocument(doc1);
+    const kwDiag1 = diags1.find((d) => d.message.includes('retrude_times'));
+    assert.ok(kwDiag1, 'Initial call should flag retrude_times as unknown keyword argument');
+
+    // 2. User edits function interface to add retrude_times=10:
+    const modifiedCode = `
+class BoxAction:
+    def process(self, tnn_content):
+        ret = self._box_retrude_material(tnn_content["addr"], tnn_content["num"], retrude_times=1)
+        return ret
+
+    def _box_retrude_material(self, addr, num, retrude_times=10):
+        pass
+`;
+    const doc2 = new (vscode as any).MockTextDocument(modifiedCode, docUri.fsPath, 'python');
+    // Simulate user editing: document is marked dirty
+    indexer.markDirty(doc2);
+
+    // Dynamic inspection: ensureSynchronized() should re-index doc2 and immediately clear the diagnostic!
+    const diags2 = inspector.inspectDocument(doc2);
+    const kwDiag2 = diags2.find((d) => d.message.includes('retrude_times'));
+    assert.ok(!kwDiag2, `Modified interface with retrude_times=10 should have ZERO error, got: ${kwDiag2?.message}`);
+  });
+
   await t.test('OmniStatusBar: should format symbol count and indexing status cleanly', async () => {
     const statusBar = new OmniStatusBar(indexer);
     statusBar.update();

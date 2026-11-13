@@ -1024,6 +1024,7 @@ export class SymbolIndexer implements vscode.Disposable {
           this.pendingChanges.delete(uriStr);
           this.dirtyDocuments.delete(uriStr);
           this.indexDocument(e.document);
+          this._onDidIndexUpdate.fire(this.totalSymbols);
         }, 500);
 
         this.pendingChanges.set(uriStr, timer);

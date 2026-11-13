@@ -1143,6 +1143,12 @@ export class CallArgumentInspector implements vscode.Disposable {
       return [];
     }
 
+    // Ensure dirty documents (e.g. freshly edited method signatures in this or other tabs)
+    // are synchronized so modified function interfaces are immediately up to date!
+    if (this.indexer && typeof this.indexer.ensureSynchronized === 'function') {
+      this.indexer.ensureSynchronized();
+    }
+
     const severityStr = getOmniConfig<string>('callArgumentSeverity', 'error');
     const severity =
       severityStr === 'warning'

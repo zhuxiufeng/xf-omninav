@@ -58,6 +58,11 @@ export class PythonKeywordCompletionProvider implements vscode.CompletionItemPro
 
     const methodName = callMatch[2];
 
+    // Ensure modified documents are synchronized before querying keywords
+    if (this.indexer && typeof this.indexer.ensureSynchronized === 'function') {
+      this.indexer.ensureSynchronized();
+    }
+
     // Find candidate definitions
     const exactDefs = this.indexer.findExact(methodName);
     if (exactDefs.length === 0) return null;

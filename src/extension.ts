@@ -114,7 +114,15 @@ export function activate(context: vscode.ExtensionContext) {
       for (const editor of vscode.window.visibleTextEditors) {
         if (editor.document.uri.toString() === document.uri.toString()) {
           navigationSubsystem.scheduleAnalysis(editor);
+          inspectionSubsystem.triggerInspect(editor);
         }
+      }
+    }),
+
+    indexer.onDidIndexUpdate((total) => {
+      uiSubsystem.updateIndexStatusBar(total);
+      for (const editor of vscode.window.visibleTextEditors) {
+        inspectionSubsystem.triggerInspect(editor);
       }
     }),
 

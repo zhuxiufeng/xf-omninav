@@ -102,6 +102,22 @@ test('Real Klipper File Inspection: nozzle_manager_wrapper.py', async (t) => {
     );
   });
 
+  await t.test('box_nano_wrapper.py: line 2385 self._box_retrude_material with retrude_times=1 should have ZERO errors', async () => {
+    const boxNanoPath = path.join(extrasDir, 'box_nano_wrapper.py');
+    if (!fs.existsSync(boxNanoPath)) return;
+    const boxNanoContent = fs.readFileSync(boxNanoPath, 'utf8');
+    const boxNanoDoc = new (vscode as any).MockTextDocument(boxNanoContent, boxNanoPath, 'python');
+    await indexer.indexDocument(boxNanoDoc);
+
+    const diags = inspector.inspectDocument(boxNanoDoc);
+    const line2385Diags = diags.filter((d) => d.range.start.line === 2384); // 0-based index for line 2385
+    assert.equal(
+      line2385Diags.length,
+      0,
+      `Line 2385 self._box_retrude_material must not produce error, but got: ${line2385Diags.map((d) => d.message).join('; ')}`
+    );
+  });
+
   inspector.dispose();
   indexer.dispose();
 });
