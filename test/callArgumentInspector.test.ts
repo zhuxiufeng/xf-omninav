@@ -1336,6 +1336,74 @@ class MultiColorMaterialBoxWrapper:
     );
   });
 
+  await t.test('Screenshot Reproduction 3: subprocess.check_output(cmd, shell=True) should NEVER flag unknown keyword argument shell', async () => {
+    // 1. Index def check_output(prog): in scripts/buildcommands.py
+    const buildCommandsText = `
+def check_output(prog):
+    logging.debug("Running %s" % (repr(prog),))
+    return ""
+`;
+    indexer.indexFile((vscode as any).Uri.file('/workspace/scripts/buildcommands.py'), buildCommandsText);
+
+    // 2. Caller doc with subprocess.check_output('/usr/bin/beep.sh 0.2', shell=True)
+    const callerText = `
+import subprocess
+
+def test_beep():
+    ret = subprocess.check_output('/usr/bin/beep.sh 0.2', shell=True).decode("utf-8")
+    return ret
+`;
+    const doc = new (vscode as any).MockTextDocument(callerText, '/workspace/extras/box_nano_wrapper.py', 'python');
+    const diagnostics = inspector.inspectDocument(doc);
+    const shellDiag = diagnostics.find((d) => d.message.includes('shell') || d.message.includes('check_output'));
+    assert.ok(!shellDiag, `subprocess.check_output with shell=True should NOT produce error, got: ${shellDiag?.message}`);
+
+    // 3. Caller doc with from subprocess import check_output
+    const bareCallerText = `
+from subprocess import check_output
+
+def test_beep_bare():
+    ret = check_output('/usr/bin/beep.sh 0.2', shell=True)
+    return ret
+`;
+    const bareDoc = new (vscode as any).MockTextDocument(bareCallerText, '/workspace/extras/filament_rack_wrapper.py', 'python');
+    const bareDiagnostics = inspector.inspectDocument(bareDoc);
+    const bareDiag = bareDiagnostics.find((d) => d.message.includes('shell') || d.message.includes('check_output'));
+    assert.ok(!bareDiag, `bare check_output imported from subprocess should NOT produce error, got: ${bareDiag?.message}`);
+
+    // 4. Legitimate call on module buildcommands.check_output should match
+    const validModuleCallerText = `
+import buildcommands
+
+def test_bc():
+    ret = buildcommands.check_output('git status')
+    bad = buildcommands.check_output('git status', unknown_kw=True)
+`;
+    const modDoc = new (vscode as any).MockTextDocument(validModuleCallerText, '/workspace/test_bc.py', 'python');
+    const modDiagnostics = inspector.inspectDocument(modDoc);
+    assert.equal(modDiagnostics.length, 1, 'Should only flag bad call with unknown_kw, valid call should have 0 diagnostics');
+    assert.ok(modDiagnostics[0].message.includes("未知关键字参数 'unknown_kw'"));
+  });
+
+  await t.test('Unrelated Receiver Isolation: call on unknown receiver object should NEVER match unrelated class', async () => {
+    const serviceDef = `
+class UnrelatedWorker:
+    def execute_task(self, task_name):
+        pass
+`;
+    indexer.indexFile((vscode as any).Uri.file('/workspace/service.py'), serviceDef);
+
+    const callerText = `
+def handle(custom_client):
+    # custom_client has no relation to UnrelatedWorker
+    custom_client.execute_task('test', timeout=30, force=True)
+`;
+    const doc = new (vscode as any).MockTextDocument(callerText, '/workspace/handler.py', 'python');
+    const diagnostics = inspector.inspectDocument(doc);
+    const diag = diagnostics.find((d) => d.message.includes('execute_task'));
+    assert.ok(!diag, `Unknown receiver custom_client should NOT be matched to UnrelatedWorker, got: ${diag?.message}`);
+  });
+
   await t.test('OmniStatusBar: should format symbol count and indexing status cleanly', async () => {
     const statusBar = new OmniStatusBar(indexer);
     statusBar.update();

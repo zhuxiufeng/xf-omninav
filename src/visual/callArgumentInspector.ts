@@ -242,6 +242,39 @@ export const COMMON_POLYMORPHIC_METHODS = new Set([
 ]);
 
 /**
+ * Python standard library modules. Calls on these modules (e.g. `subprocess.check_output`,
+ * `os.path.join`, `json.dumps`, etc.) should NEVER be validated against workspace symbols.
+ */
+export const PYTHON_STDLIB_MODULES = new Set([
+  'abc', 'aifc', 'argparse', 'array', 'ast', 'asynchat', 'asyncio', 'asyncore',
+  'atexit', 'audioop', 'base64', 'bdb', 'binascii', 'binhex', 'bisect', 'builtins',
+  'bz2', 'calendar', 'cgi', 'cgitb', 'chunk', 'cmath', 'cmd', 'code', 'codecs',
+  'codeop', 'collections', 'colorsys', 'compileall', 'concurrent', 'configparser',
+  'contextlib', 'contextvars', 'copy', 'copyreg', 'cProfile', 'crypt', 'csv', 'ctypes',
+  'curses', 'dataclasses', 'datetime', 'dbm', 'decimal', 'difflib', 'dis', 'distutils',
+  'doctest', 'email', 'encodings', 'ensurepip', 'enum', 'errno', 'faulthandler',
+  'fcntl', 'filecmp', 'fileinput', 'fnmatch', 'fractions', 'ftplib', 'functools',
+  'gc', 'genericpath', 'getopt', 'getpass', 'gettext', 'glob', 'graphlib', 'grp',
+  'gzip', 'hashlib', 'heapq', 'hmac', 'html', 'http', 'imaplib', 'imghdr', 'imp',
+  'importlib', 'inspect', 'io', 'ipaddress', 'itertools', 'json', 'keyword', 'lib2to3',
+  'linecache', 'locale', 'logging', 'lzma', 'mailbox', 'mailcap', 'marshal', 'math',
+  'mimetypes', 'mmap', 'modulefinder', 'msilib', 'msvcrt', 'multiprocessing', 'netrc',
+  'nis', 'nntplib', 'ntpath', 'numbers', 'operator', 'optparse', 'os', 'ossaudiodev',
+  'pathlib', 'pdb', 'pickle', 'pickletools', 'pipes', 'pkgutil', 'platform', 'plistlib',
+  'poplib', 'posix', 'posixpath', 'pprint', 'profile', 'pstats', 'pty', 'pwd', 'py_compile',
+  'pyclbr', 'pydoc', 'queue', 'quopri', 'random', 're', 'readline', 'reprlib', 'resource',
+  'rlcompleter', 'sched', 'secrets', 'select', 'selectors', 'shelve', 'shlex', 'shutil',
+  'signal', 'site', 'smtpd', 'smtplib', 'sndhdr', 'socket', 'socketserver', 'spwd',
+  'sqlite3', 'ssl', 'stat', 'statistics', 'string', 'stringprep', 'struct', 'subprocess',
+  'sunau', 'symbol', 'symtable', 'sys', 'sysconfig', 'syslog', 'tabnanny', 'tarfile',
+  'telnetlib', 'tempfile', 'termios', 'test', 'textwrap', 'threading', 'time', 'timeit',
+  'tkinter', 'token', 'tokenize', 'tomllib', 'trace', 'traceback', 'tracemalloc', 'tty',
+  'turtle', 'turtledemo', 'types', 'typing', 'unicodedata', 'unittest', 'urllib', 'uu',
+  'uuid', 'venv', 'warnings', 'wave', 'weakref', 'webbrowser', 'winreg', 'winsound',
+  'wsgiref', 'xdrlib', 'xml', 'xmlrpc', 'zipapp', 'zipfile', 'zipimport', 'zlib', 'zoneinfo'
+]);
+
+/**
  * Python built-in type method signatures for exact argument count checking.
  * Maps "type.method" -> { min, max } positional args (excluding self).
  * Only methods with strict, well-known signatures are listed here.
@@ -422,6 +455,31 @@ export class CallArgumentInspector implements vscode.Disposable {
    */
   public isPolymorphicMethod(methodName: string): boolean {
     return COMMON_POLYMORPHIC_METHODS.has(methodName) || this.userWhitelistSet.has(methodName);
+  }
+
+  /**
+   * Determine whether a symbol was imported from a Python standard library module in this document.
+   * e.g. `from subprocess import check_output` or `from os.path import join, exists`
+   */
+  public isImportedFromStdlib(document: vscode.TextDocument, symbolName: string): boolean {
+    const maxLines = Math.min(document.lineCount, 300);
+    for (let i = 0; i < maxLines; i++) {
+      const line = document.lineAt(i).text.trim();
+      if (!line || line.startsWith('#')) continue;
+      if (line.startsWith('from ')) {
+        const match = line.match(/^from\s+([A-Za-z0-9_.]+)\s+import\s+(.+)$/);
+        if (match) {
+          const rootMod = match[1].split('.')[0].toLowerCase();
+          if (PYTHON_STDLIB_MODULES.has(rootMod)) {
+            const importedNames = match[2].split(',').map((s) => s.trim().split(/\s+as\s+/)[0].trim());
+            if (importedNames.includes(symbolName) || importedNames.includes('*')) {
+              return true;
+            }
+          }
+        }
+      }
+    }
+    return false;
   }
 
   /**
@@ -1226,6 +1284,19 @@ export class CallArgumentInspector implements vscode.Disposable {
           continue;
         }
 
+        // Skip calls on Python standard library modules (e.g. subprocess.check_output, os.path.join, sys.exit)
+        if (isPython && receiver) {
+          const rootMod = receiver.split('.')[0].toLowerCase();
+          if (PYTHON_STDLIB_MODULES.has(rootMod)) {
+            continue;
+          }
+        }
+
+        // Skip Python symbols imported directly from standard library (e.g. from subprocess import check_output)
+        if (isPython && !receiver && this.isImportedFromStdlib(document, methodName)) {
+          continue;
+        }
+
         const openParenChar = match.index + match[0].lastIndexOf('(');
         const callArgs = this.parseCallArguments(document, lineIdx, openParenChar, getLine);
         if (!callArgs || callArgs.hasUnpack) {
@@ -1316,6 +1387,30 @@ export class CallArgumentInspector implements vscode.Disposable {
           const rawProp = receiver.replace(/^(?:self|this)\./, '');
           const receiverParts = receiver.split('.');
           const terminalProp = receiverParts[receiverParts.length - 1];
+          const cleanRaw = rawProp.replace(/_/g, '').toLowerCase();
+          const cleanTerminal = terminalProp.replace(/_/g, '').toLowerCase();
+
+          // Top-level functions (!d.containerName) can only match if their defining file module
+          // matches the receiver (e.g. buildcommands.check_output).
+          // An object instance or different module receiver should never match an unrelated top-level function.
+          candidateDefs = candidateDefs.filter((d) => {
+            if (!d.containerName) {
+              const pth = (d.fileRelativePath || d.uri.fsPath || d.uri.path || '').toLowerCase().replace(/_/g, '');
+              const filename = pth.split('/').pop() || '';
+              const base = filename.replace(/\.[^.]+$/, '');
+              return (
+                base === cleanRaw ||
+                base === cleanTerminal ||
+                base === cleanRaw + 'wrapper' ||
+                base === cleanTerminal + 'wrapper'
+              );
+            }
+            return true;
+          });
+          if (candidateDefs.length === 0) {
+            continue;
+          }
+
           const isGeneric =
             GENERIC_VARIABLE_NAMES.has(receiver) ||
             GENERIC_VARIABLE_NAMES.has(rawProp) ||
@@ -1420,6 +1515,24 @@ export class CallArgumentInspector implements vscode.Disposable {
           } else if (isGeneric || (!hasComponentMatch && this.isPolymorphicMethod(methodName))) {
             // Generic variable name or un-inferred polymorphic method, skip
             continue;
+          } else if (!hasComponentMatch && !receiver.startsWith('self.') && !receiver.startsWith('this.') && !/^[A-Z]/.test(receiver)) {
+            // Receiver is an un-inferred object variable that doesn't match any candidate container or component:
+            // Filter candidate definitions to only those whose container or file matches receiver
+            const matchingContainerDefs = candidateDefs.filter((d) => {
+              const cont = d.containerName?.toLowerCase().replace(/_/g, '');
+              const pth = (d.fileRelativePath || d.uri.fsPath || d.uri.path || '').toLowerCase().replace(/_/g, '');
+              return (
+                (cont && (cont === cleanRaw || cont === cleanTerminal)) ||
+                pth.includes(cleanRaw) ||
+                pth.includes(cleanTerminal)
+              );
+            });
+            if (matchingContainerDefs.length > 0) {
+              candidateDefs = matchingContainerDefs;
+            } else {
+              // Unrelated candidate definitions; skip to avoid false positives on third-party or dynamic objects
+              continue;
+            }
           }
         }
 

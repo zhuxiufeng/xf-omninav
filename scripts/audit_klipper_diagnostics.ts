@@ -14,7 +14,9 @@ async function main() {
     'box_nano_wrapper.py',
     'box_wrapper.py',
     'nozzle_manager_wrapper.py',
+    'filament_rack_wrapper.py',
     'gcode_move.py',
+    '../scripts/buildcommands.py',
   ];
 
   // 1. Index all target files first

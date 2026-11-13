@@ -79,6 +79,29 @@ test('Real Klipper File Inspection: nozzle_manager_wrapper.py', async (t) => {
     );
   });
 
+  await t.test('box_nano_wrapper.py: line 2960 subprocess.check_output with shell=True should have ZERO errors', async () => {
+    const buildCommandsPath = path.resolve(extrasDir, '../scripts/buildcommands.py');
+    if (fs.existsSync(buildCommandsPath)) {
+      const bcContent = fs.readFileSync(buildCommandsPath, 'utf8');
+      const bcDoc = new (vscode as any).MockTextDocument(bcContent, buildCommandsPath, 'python');
+      await indexer.indexDocument(bcDoc);
+    }
+
+    const boxNanoPath = path.join(extrasDir, 'box_nano_wrapper.py');
+    if (!fs.existsSync(boxNanoPath)) return;
+    const boxNanoContent = fs.readFileSync(boxNanoPath, 'utf8');
+    const boxNanoDoc = new (vscode as any).MockTextDocument(boxNanoContent, boxNanoPath, 'python');
+    await indexer.indexDocument(boxNanoDoc);
+
+    const diags = inspector.inspectDocument(boxNanoDoc);
+    const line2960Diags = diags.filter((d) => d.range.start.line === 2959); // 0-based index for line 2960
+    assert.equal(
+      line2960Diags.length,
+      0,
+      `Line 2960 subprocess.check_output must not produce error, but got: ${line2960Diags.map((d) => d.message).join('; ')}`
+    );
+  });
+
   inspector.dispose();
   indexer.dispose();
 });
