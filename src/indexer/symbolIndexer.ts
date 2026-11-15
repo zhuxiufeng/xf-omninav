@@ -21,6 +21,7 @@ export class SymbolIndexer implements vscode.Disposable {
 
   private disposables: vscode.Disposable[] = [];
   private isIndexing: boolean = false;
+  public version: number = 0;
   private _onDidIndexUpdate = new vscode.EventEmitter<number>();
   public readonly onDidIndexUpdate = this._onDidIndexUpdate.event;
 
@@ -383,12 +384,14 @@ export class SymbolIndexer implements vscode.Disposable {
     if (fileClasses.length > 0) {
       this.fileClassesMap.set(uriStr, fileClasses);
     }
+    this.version++;
   }
 
   /**
    * Remove symbols belonging to a specific file URI.
    */
   public removeFileSymbols(uriStr: string): void {
+    this.version++;
     this.fileMtimeMap.delete(uriStr);
     const existing = this.fileMap.get(uriStr);
     if (!existing) {

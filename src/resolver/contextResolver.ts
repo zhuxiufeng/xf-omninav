@@ -292,6 +292,7 @@ export class ContextResolver {
   }
 
   private static variablePatternCache = new Map<string, RegExp[]>();
+  private static varTypeCache = new Map<string, { version: number; type: string | undefined }>();
   private static literalPatternCache = new Map<
     string,
     {
@@ -363,6 +364,21 @@ export class ContextResolver {
     callLine: number,
     indexer?: any
   ): string | undefined {
+    const docVer = (document as any).version ?? 0;
+    const cacheKey = `${document.uri.toString()}#${varName}#${callLine}`;
+    const cached = this.varTypeCache.get(cacheKey);
+    if (cached && cached.version === docVer) {
+      return cached.type;
+    }
+
+    const recordVarType = (t: string | undefined): string | undefined => {
+      if (this.varTypeCache.size > 2000) {
+        this.varTypeCache.clear();
+      }
+      this.varTypeCache.set(cacheKey, { version: docVer, type: t });
+      return t;
+    };
+
     const escaped = varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const patterns = this.getVariablePatterns(escaped);
     const literals = this.getLiteralPatterns(escaped);
@@ -376,25 +392,25 @@ export class ContextResolver {
 
       // Check standard Python literal assignments (e.g. result = { ... }, items = [ ... ])
       if (literals.dict.test(line)) {
-        return 'dict';
+        return recordVarType('dict');
       }
       if (literals.list.test(line)) {
-        return 'list';
+        return recordVarType('list');
       }
       if (literals.set.test(line)) {
-        return 'set';
+        return recordVarType('set');
       }
       if (literals.tuple.test(line)) {
-        return 'tuple';
+        return recordVarType('tuple');
       }
       if (literals.str.test(line)) {
-        return 'str';
+        return recordVarType('str');
       }
       if (literals.bool.test(line)) {
-        return 'bool';
+        return recordVarType('bool');
       }
       if (literals.number.test(line)) {
-        return 'number';
+        return recordVarType('number');
       }
 
       for (const pattern of patterns) {
@@ -403,18 +419,18 @@ export class ContextResolver {
           if (match[1] === 'None' || match[1] === 'Any') {
             const altMatch = line.match(new RegExp(`${escaped}\\s*:\\s*(?:.*\\|\\s*)?([A-Z][A-Za-z0-9_]*)\\b`));
             if (altMatch && altMatch[1] && altMatch[1] !== 'None' && altMatch[1] !== 'Any') {
-              return altMatch[1];
+              return recordVarType(altMatch[1]);
             }
             continue;
           }
-          return match[1];
+          return recordVarType(match[1]);
         }
       }
 
       // Component getter: x = config.get_printer() or x = self.printer.get_reactor()
       const getterMatch = line.match(new RegExp(`${escaped}\\s*=\\s*.*?(?:get_|load_)([a-z0-9_]+)\\s*\\(\\s*\\)`));
       if (getterMatch && getterMatch[1]) {
-        return ContextResolver.snakeToPascal(getterMatch[1]);
+        return recordVarType(ContextResolver.snakeToPascal(getterMatch[1]));
       }
 
       // getattr pattern: sensor = getattr(self, 'waste_chute_sensor', None)
@@ -424,9 +440,9 @@ export class ContextResolver {
       if (getattrMatch && getattrMatch[1]) {
         const propType = this.inferSelfPropertyType(document, getattrMatch[1], i);
         if (propType) {
-          return propType;
+          return recordVarType(propType);
         }
-        return this.snakeToPascal(getattrMatch[1]);
+        return recordVarType(this.snakeToPascal(getattrMatch[1]));
       }
 
       // Return type inference: var = callee(...)
@@ -441,13 +457,13 @@ export class ContextResolver {
             if (d.signature) {
               const retMatch = d.signature.match(/->\s*(?:Optional\[)?([A-Z][A-Za-z0-9_]*)/);
               if (retMatch && retMatch[1]) {
-                return retMatch[1];
+                return recordVarType(retMatch[1]);
               }
             }
             if (d.docstring) {
               const docMatch = d.docstring.match(/(?::rtype:|@returns?\{)\s*([A-Z][A-Za-z0-9_]*)/);
               if (docMatch && docMatch[1]) {
-                return docMatch[1];
+                return recordVarType(docMatch[1]);
               }
             }
           }
@@ -460,7 +476,7 @@ export class ContextResolver {
       }
     }
 
-    return undefined;
+    return recordVarType(undefined);
   }
 
   private static selfPropCache = new Map<string, { version: number; type: string | undefined }>();

@@ -1130,6 +1130,39 @@ export class UsageResolver {
         }
       }
 
+      // Fast-path bypass for non-constructor usage searches:
+      // If the line cannot alter multiline docstring/comment state and does NOT contain symbolName,
+      // skip expensive character-by-character code extraction and trimming!
+      if (!isConstructor) {
+        if (
+          parseState.inTripleQuote === null &&
+          !parseState.inBlockComment &&
+          line.indexOf('"""') === -1 &&
+          line.indexOf("'''") === -1 &&
+          line.indexOf('/*') === -1 &&
+          !line.includes(symbolName)
+        ) {
+          if (isPython) {
+            if (line.includes('class ')) {
+              const classHeader = line.match(/^(\s*)class\s+([A-Za-z0-9_]+)/);
+              if (classHeader) {
+                currentClassIndent = classHeader[1].length;
+                currentClassName = classHeader[2];
+              }
+            } else if (currentClassName && !line.startsWith('#')) {
+              const trimmedLine = line.trim();
+              if (trimmedLine) {
+                const indentMatch = line.match(/^(\s*)/);
+                if (indentMatch && indentMatch[1].length <= currentClassIndent) {
+                  currentClassName = null;
+                }
+              }
+            }
+          }
+          continue;
+        }
+      }
+
       // Extract code outside comments and docstrings
       const code = this.extractCodeFromLine(line, isPython, parseState, ext);
       const trimmed = line.trim();

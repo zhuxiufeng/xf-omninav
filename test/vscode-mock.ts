@@ -58,6 +58,27 @@ export class Location {
   constructor(public uri: Uri, public range: Range | Position) {}
 }
 
+export enum ProgressLocation {
+  SourceControl = 1,
+  Window = 10,
+  Notification = 15,
+}
+
+export class SourceBreakpoint {
+  constructor(public location: Location, public enabled: boolean = true) {}
+}
+
+export class CancellationTokenSource {
+  public token = {
+    isCancellationRequested: false,
+    onCancellationRequested: (listener: any) => ({ dispose: () => {} }),
+  };
+  public cancel() {
+    this.token.isCancellationRequested = true;
+  }
+  public dispose() {}
+}
+
 export class ThemeColor {
   constructor(public id: string) {}
 }

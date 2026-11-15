@@ -370,6 +370,17 @@ export class CallArgumentInspector implements vscode.Disposable {
   private lastDecorations = new Map<string, vscode.DecorationOptions[]>();
   private lastCalls = new Map<string, ParsedCallInfo[]>();
   private fullAuditTimers = new Map<string, NodeJS.Timeout>();
+  private indexerVersion = 0;
+  private documentInspectionCache = new Map<
+    string,
+    {
+      version: number;
+      indexerVersion: number;
+      diagnostics: vscode.Diagnostic[];
+      decorations: vscode.DecorationOptions[];
+      parsedCalls: ParsedCallInfo[];
+    }
+  >();
   private _onDidInspectDocument = new vscode.EventEmitter<{ uri: vscode.Uri; errorCount: number }>();
   public readonly onDidInspectDocument = this._onDidInspectDocument.event;
 
@@ -379,6 +390,15 @@ export class CallArgumentInspector implements vscode.Disposable {
     this.refreshPolymorphicWhitelist();
     this.diagnosticCollection =
       vscode.languages.createDiagnosticCollection('xfOmniNav-callArgs');
+
+    if (this.indexer && typeof this.indexer.onDidIndexUpdate === 'function') {
+      this.disposables.push(
+        this.indexer.onDidIndexUpdate(() => {
+          this.indexerVersion++;
+          this.documentInspectionCache.clear();
+        })
+      );
+    }
 
     this.errorDecorationType = vscode.window.createTextEditorDecorationType({
       backgroundColor: 'rgba(255, 50, 50, 0.18)',
@@ -1194,6 +1214,28 @@ export class CallArgumentInspector implements vscode.Disposable {
     const enableMissingCheck = getOmniConfig<boolean>('enableMissingArgumentInspection', true);
     const enableUnexpectedKwCheck = getOmniConfig<boolean>('enableUnexpectedKeywordInspection', true);
 
+    const uriStr = document.uri.toString();
+    const docVer = (document as any).version ?? 0;
+    const docText = document.getText();
+    let docHash = docText.length;
+    const step = docText.length > 2000 ? Math.floor(docText.length / 500) : 1;
+    for (let i = 0; i < docText.length; i += step) {
+      docHash = ((docHash << 5) - docHash + docText.charCodeAt(i)) | 0;
+    }
+    const indexerVer = (this.indexer as any).version ?? this.indexerVersion;
+    const cacheKey = `${uriStr}#${docVer}#${docHash}#${indexerVer}`;
+
+    if (!scanLineRange) {
+      const cached = this.documentInspectionCache.get(cacheKey);
+      if (cached) {
+        this.lastCalls.set(uriStr, cached.parsedCalls);
+        this.diagnosticCollection.set(document.uri, cached.diagnostics);
+        this.lastDecorations.set(uriStr, cached.decorations);
+        this.applyDecorationsToDocument(document.uri, cached.decorations);
+        return cached.diagnostics;
+      }
+    }
+
     const decorations: vscode.DecorationOptions[] = [];
     const diagnostics: vscode.Diagnostic[] = [];
     const parsedCalls: ParsedCallInfo[] = [];
@@ -1213,8 +1255,22 @@ export class CallArgumentInspector implements vscode.Disposable {
     const scanStart = scanLineRange ? Math.max(0, scanLineRange.start) : 0;
     const scanEnd = scanLineRange ? Math.min(totalLines - 1, scanLineRange.end) : totalLines - 1;
 
-    const linesCache = document.getText().split(/\r?\n/);
-    const getLine = (l: number): string => linesCache[l] ?? '';
+    let getLine: (l: number) => string;
+    if (typeof document.lineAt === 'function' && scanLineRange) {
+      const lineMap = new Map<number, string>();
+      getLine = (l: number): string => {
+        if (l < 0 || (typeof document.lineCount === 'number' && l >= document.lineCount)) return '';
+        let line = lineMap.get(l);
+        if (line === undefined) {
+          line = document.lineAt(l).text;
+          lineMap.set(l, line);
+        }
+        return line;
+      };
+    } else {
+      const linesCache = docText.split(/\r?\n/);
+      getLine = (l: number): string => linesCache[l] ?? '';
+    }
 
     let currentClassName: string | null = null;
     let currentClassIndent = -1;
@@ -1234,6 +1290,9 @@ export class CallArgumentInspector implements vscode.Disposable {
         }
       }
     }
+
+    // Reusable regex instance across the document scan to avoid allocating thousands of RegExp objects
+    const callRegex = /(?:((?:[A-Za-z0-9_]+\.)*[A-Za-z0-9_]+)\.)?([A-Za-z0-9_]+)\s*\(/g;
 
     for (let lineIdx = scanStart; lineIdx <= scanEnd; lineIdx++) {
       const line = getLine(lineIdx);
@@ -1291,8 +1350,7 @@ export class CallArgumentInspector implements vscode.Disposable {
         continue;
       }
 
-      // Regex matching function and method calls: e.g. obj.method(...) or self.gcode.method(...) or func(...)
-      const callRegex = /(?:((?:[A-Za-z0-9_]+\.)*[A-Za-z0-9_]+)\.)?([A-Za-z0-9_]+)\s*\(/g;
+      callRegex.lastIndex = 0;
       let match: RegExpExecArray | null;
 
       while ((match = callRegex.exec(line)) !== null) {
@@ -1468,14 +1526,11 @@ export class CallArgumentInspector implements vscode.Disposable {
           if (!inferredType && rawProp.includes('.')) {
             inferredType = ContextResolver.inferChainedPropertyType(document, rawProp, lineIdx, this.indexer);
           }
-          if (!inferredType && receiver.includes('.')) {
+          if (!inferredType) {
             inferredType = ContextResolver.inferSelfPropertyType(document, rawProp, lineIdx);
           }
           if (!inferredType && terminalProp !== rawProp) {
             inferredType = ContextResolver.inferSelfPropertyType(document, terminalProp, lineIdx);
-          }
-          if (!inferredType) {
-            inferredType = ContextResolver.inferSelfPropertyType(document, rawProp, lineIdx);
           }
           if (!inferredType && !isGeneric) {
             const pascalTerminal = ContextResolver.snakeToPascal(terminalProp);
@@ -2065,6 +2120,17 @@ export class CallArgumentInspector implements vscode.Disposable {
       this._onDidInspectDocument.fire({ uri: document.uri, errorCount: mergedDiags.length });
       return mergedDiags;
     } else {
+      if (this.documentInspectionCache.size >= 100) {
+        this.documentInspectionCache.clear();
+      }
+      this.documentInspectionCache.set(cacheKey, {
+        version: docVer,
+        indexerVersion: this.indexerVersion,
+        diagnostics: [...diagnostics],
+        decorations: [...decorations],
+        parsedCalls: [...parsedCalls],
+      });
+
       this.lastCalls.set(document.uri.toString(), parsedCalls);
       this.diagnosticCollection.set(document.uri, diagnostics);
       this.lastDecorations.set(document.uri.toString(), decorations);
@@ -2327,13 +2393,20 @@ export class CallArgumentInspector implements vscode.Disposable {
   }
 
   public clearDocument(uri: vscode.Uri): void {
+    const uriStr = uri.toString();
     this.diagnosticCollection.delete(uri);
-    this.lastDecorations.delete(uri.toString());
-    this.lastCalls.delete(uri.toString());
+    this.lastDecorations.delete(uriStr);
+    this.lastCalls.delete(uriStr);
+    for (const key of Array.from(this.documentInspectionCache.keys())) {
+      if (key.startsWith(uriStr + '#')) {
+        this.documentInspectionCache.delete(key);
+      }
+    }
     this.applyDecorationsToDocument(uri, []);
   }
 
   public clearAll(): void {
+    this.documentInspectionCache.clear();
     this.diagnosticCollection.clear();
     this.sigCache.clear();
     this.lastCalls.clear();
