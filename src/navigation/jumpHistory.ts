@@ -16,7 +16,9 @@ export class JumpHistory {
 
     // Sync with VS Code native navigation stack so Vim (Ctrl+O) and Alt+Left work seamlessly
     try {
-      vscode.commands.executeCommand('workbench.action.pushEditorLocation');
+      Promise.resolve(
+        vscode.commands.executeCommand('workbench.action.pushEditorLocation')
+      ).catch(() => {});
     } catch {}
 
     const item: NavigationHistoryItem = {
@@ -48,7 +50,11 @@ export class JumpHistory {
   public async popAndNavigate(): Promise<boolean> {
     if (this.stack.length === 0) {
       // Fallback to VS Code native navigate back
-      await vscode.commands.executeCommand('workbench.action.navigateBack');
+      try {
+        await Promise.resolve(
+          vscode.commands.executeCommand('workbench.action.navigateBack')
+        ).catch(() => {});
+      } catch {}
       return true;
     }
 
@@ -59,7 +65,7 @@ export class JumpHistory {
 
     try {
       const doc = await vscode.workspace.openTextDocument(item.uri);
-      const editor = await vscode.window.showTextDocument(doc);
+      const editor = await vscode.window.showTextDocument(doc, { preview: false });
       editor.selection = new vscode.Selection(item.position, item.position);
       editor.revealRange(
         new vscode.Range(item.position, item.position),

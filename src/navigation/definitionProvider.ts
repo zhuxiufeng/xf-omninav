@@ -52,16 +52,24 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
     // 2.5 PyCharm Feature: If cursor is ALREADY at the definition header (e.g. def foo, class Bar):
     // Jump directly to the direct call site (or display list of call sites if multiple)
     if (UsageResolver.isAtDefinition(document, position, symbolName)) {
-      const usages = await UsageResolver.findUsages(document, position, symbolName, this.indexer);
-      if (usages.length > 0) {
-        return usages.map((u) => ({
-          originSelectionRange: wordRange,
-          targetUri: u.uri,
-          targetRange: u.range,
-          targetSelectionRange: u.range,
-        }));
-      }
+      try {
+        const usagesPromise = UsageResolver.findUsages(document, position, symbolName, this.indexer);
+        const timeoutPromise = new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 350));
+        const usages = await Promise.race([usagesPromise, timeoutPromise]);
+        if (usages && usages.length > 0) {
+          return usages.map((u) => ({
+            originSelectionRange: wordRange,
+            targetUri: u.uri,
+            targetRange: u.range,
+            targetSelectionRange: u.range,
+          }));
+        }
+      } catch {}
 
+      return null;
+    }
+
+    if (token && token.isCancellationRequested) {
       return null;
     }
 
@@ -295,12 +303,14 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
     SmoothDefinitionProvider.isQueryingLsp = true;
     try {
       let timer: NodeJS.Timeout | undefined;
-      const lspPromise = vscode.commands.executeCommand<
-        vscode.Location | vscode.Location[] | vscode.LocationLink[] | undefined
-      >('vscode.executeDefinitionProvider', document.uri, position);
+      const lspPromise = Promise.resolve(
+        vscode.commands.executeCommand<
+          vscode.Location | vscode.Location[] | vscode.LocationLink[] | undefined
+        >('vscode.executeDefinitionProvider', document.uri, position)
+      ).catch(() => undefined);
 
       const timeoutPromise = new Promise<undefined>((resolve) => {
-        timer = setTimeout(() => resolve(undefined), 450);
+        timer = setTimeout(() => resolve(undefined), 80);
       });
 
       const raw = await Promise.race([lspPromise, timeoutPromise]);
@@ -639,8 +649,7 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
     symbolName: string,
     targetContainer?: string
   ): SymbolDefinition | null {
-    const text = document.getText();
-    const lines = text.split(/\r?\n/);
+    const lineCount = document.lineCount;
     const isPython = document.languageId === 'python';
     const regexList = [
       new RegExp(`^(\\s*)(?:self|cls)\\.(${symbolName})\\b(?:\\s*:\\s*[^=]+)?\\s*=`),
@@ -652,8 +661,8 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
     let currentClassName: string | undefined;
     let currentClassIndent = -1;
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
+    for (let i = 0; i < lineCount; i++) {
+      const line = document.lineAt(i).text;
       if (isPython) {
         const classMatch = line.match(/^(\s*)class\s+([A-Za-z0-9_]+)/);
         if (classMatch) {
@@ -712,13 +721,23 @@ export class SmoothImplementationProvider implements vscode.ImplementationProvid
 
     const symbolName = document.getText(wordRange);
 
-    // 1. Try LSP Implementation Provider first
+    // 1. Try LSP Implementation Provider first (with 100ms timeout)
     try {
-      const lspImpls = await vscode.commands.executeCommand<vscode.Location[]>(
-        'vscode.executeImplementationProvider',
-        document.uri,
-        position
-      );
+      let timer: NodeJS.Timeout | undefined;
+      const lspPromise = Promise.resolve(
+        vscode.commands.executeCommand<vscode.Location[]>(
+          'vscode.executeImplementationProvider',
+          document.uri,
+          position
+        )
+      ).catch(() => undefined);
+
+      const timeoutPromise = new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), 100);
+      });
+
+      const lspImpls = await Promise.race([lspPromise, timeoutPromise]);
+      if (timer) clearTimeout(timer);
       if (lspImpls && lspImpls.length > 0) {
         return lspImpls;
       }

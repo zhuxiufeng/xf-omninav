@@ -54,17 +54,15 @@ export class UsageResolver {
         py: [
           new RegExp(`^\\s*(?:async\\s+)?def\\s+${escaped}\\b`),
           new RegExp(`^\\s*class\\s+${escaped}\\b`),
-          new RegExp(`^\\s*(?:self|cls)\\.${escaped}\\b(?:\\s*:\\s*[^=]+)?\\s*=`),
-          new RegExp(`^\\s*${escaped}\\b(?:\\s*:\\s*[^=]+)?\\s*=`),
+          new RegExp(`^\\s*(?:self|cls)\\.${escaped}\\b(?:\\s*:\\s*[^=]+)?\\s*=\\s*(?:lambda\\b|def\\b)`),
         ],
         js: [
           new RegExp(`(?:function|class|interface|type)\\s+${escaped}\\b`),
-          new RegExp(`(?:const|let|var)\\s+${escaped}\\b\\s*(?::\\s*[^=]+)?\\s*=`),
+          new RegExp(`(?:const|let|var)\\s+${escaped}\\b\\s*(?::\\s*[^=]+)?\\s*=\\s*(?:\\([^)]*\\)|[A-Za-z0-9_]+)\\s*=>`),
           new RegExp(`^\\s*(?:public|private|protected|async|static|\\*)*\\s*${escaped}\\b\\s*\\(`),
         ],
         generic: [
-          new RegExp(`(?:def|function|class|fn|func|struct)\\s+${escaped}\\b`),
-          new RegExp(`^\\s*${escaped}\\b\\s*[:=]`),
+          new RegExp(`(?:def|function|class|fn|func|struct|interface|type)\\s+${escaped}\\b`),
         ],
       };
 
@@ -556,8 +554,22 @@ export class UsageResolver {
         const rgResults = await new Promise<string[]>((resolve, reject) => {
           cp.execFile(
             rgBin,
-            ['--files-with-matches', '-w', '-g', `*${ext}`, '--no-heading', searchSymbol, rootPath],
-            { timeout: 3000 },
+            [
+              '--files-with-matches',
+              '-w',
+              '-g',
+              `*${ext}`,
+              '--glob',
+              '!.git',
+              '--glob',
+              '!__pycache__',
+              '--glob',
+              '!node_modules',
+              '--no-heading',
+              searchSymbol,
+              rootPath,
+            ],
+            { timeout: 1500 },
             (err, stdout) => {
               if (err && (err as any).code === 'ENOENT') {
                 this.rgAvailable = false;
@@ -566,7 +578,8 @@ export class UsageResolver {
                 resolve([]);
               } else if (stdout) {
                 this.rgAvailable = true;
-                resolve(stdout.trim().split(/\r?\n/).map((s) => s.trim()).filter(Boolean));
+                const lines = stdout.trim().split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+                resolve(lines.slice(0, 50));
               } else {
                 this.rgAvailable = true;
                 resolve([]);
@@ -580,17 +593,30 @@ export class UsageResolver {
       }
     }
 
-    // 2. Fallback to grep
+    // 2. Fallback to grep with strict directory exclusions
     return new Promise<string[]>((resolve) => {
       cp.execFile(
         'grep',
-        ['-rn', '-l', '-w', `--include=*${ext}`, searchSymbol, rootPath],
-        { timeout: 3000 },
+        [
+          '-rn',
+          '-l',
+          '-w',
+          `--include=*${ext}`,
+          '--exclude-dir=.git',
+          '--exclude-dir=__pycache__',
+          '--exclude-dir=node_modules',
+          '--exclude-dir=.venv',
+          '--exclude-dir=venv',
+          searchSymbol,
+          rootPath,
+        ],
+        { timeout: 1500 },
         (err: any, stdout: string) => {
           if (err && err.code !== 1) {
             resolve([]);
           } else if (stdout) {
-            resolve(stdout.trim().split(/\r?\n/).map((s) => s.trim()).filter(Boolean));
+            const lines = stdout.trim().split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+            resolve(lines.slice(0, 50));
           } else {
             resolve([]);
           }

@@ -143,16 +143,23 @@ export class NavigateCommand {
       }
     }
 
-    // 3. Try native LSP definition provider first (with 120ms timeout for instant responsiveness)
+    // 3. Try native LSP definition provider first (with 80ms timeout for instant responsiveness)
     try {
-      const lspLocations = await Promise.race([
+      let timer: NodeJS.Timeout | undefined;
+      const lspPromise = Promise.resolve(
         vscode.commands.executeCommand<vscode.Location[] | vscode.LocationLink[]>(
           'vscode.executeDefinitionProvider',
           document.uri,
           position
-        ),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), 120)),
-      ]);
+        )
+      ).catch(() => null);
+
+      const timeoutPromise = new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), 80);
+      });
+
+      const lspLocations = await Promise.race([lspPromise, timeoutPromise]);
+      if (timer) clearTimeout(timer);
 
       if (lspLocations && lspLocations.length > 0) {
         // Check if LSP just returned current line (i.e. already at definition)
@@ -313,7 +320,7 @@ export class NavigateCommand {
       }
     }
 
-    const targetEditor = await vscode.window.showTextDocument(doc);
+    const targetEditor = await vscode.window.showTextDocument(doc, { preview: false });
     targetEditor.selection = new vscode.Selection(targetPos, targetPos);
     targetEditor.revealRange(
       new vscode.Range(targetPos, targetPos),
@@ -463,8 +470,7 @@ export class NavigateCommand {
     symbolName: string,
     targetContainer?: string
   ): SymbolDefinition | null {
-    const text = document.getText();
-    const lines = text.split(/\r?\n/);
+    const lineCount = document.lineCount;
     const isPython = document.languageId === 'python';
     const regexList = [
       new RegExp(`^(\\s*)(?:self|cls)\\.(${symbolName})\\b(?:\\s*:\\s*[^=]+)?\\s*=`),
@@ -476,8 +482,8 @@ export class NavigateCommand {
     let currentClassName: string | undefined;
     let currentClassIndent = -1;
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
+    for (let i = 0; i < lineCount; i++) {
+      const line = document.lineAt(i).text;
       if (isPython) {
         const classMatch = line.match(/^(\s*)class\s+([A-Za-z0-9_]+)/);
         if (classMatch) {

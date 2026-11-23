@@ -420,22 +420,24 @@ export class CallArgumentInspector implements vscode.Disposable {
     });
 
     this.debouncedInspect = debounce((editor: vscode.TextEditor) => {
-      if (!editor || !editor.document) return;
-      if (
-        editor.document.lineCount > 1500 &&
-        editor.visibleRanges &&
-        editor.visibleRanges.length > 0
-      ) {
-        const first = editor.visibleRanges[0].start.line;
-        const last = editor.visibleRanges[editor.visibleRanges.length - 1].end.line;
-        const scanRange = {
-          start: Math.max(0, first - 80),
-          end: Math.min(editor.document.lineCount - 1, last + 80),
-        };
-        this.inspectDocument(editor.document, scanRange);
-      } else {
-        this.inspectDocument(editor.document);
-      }
+      try {
+        if (!editor || !editor.document || editor.document.isClosed) return;
+        if (
+          editor.document.lineCount > 1500 &&
+          editor.visibleRanges &&
+          editor.visibleRanges.length > 0
+        ) {
+          const first = editor.visibleRanges[0].start.line;
+          const last = editor.visibleRanges[editor.visibleRanges.length - 1].end.line;
+          const scanRange = {
+            start: Math.max(0, first - 80),
+            end: Math.min(editor.document.lineCount - 1, last + 80),
+          };
+          this.inspectDocument(editor.document, scanRange);
+        } else {
+          this.inspectDocument(editor.document);
+        }
+      } catch {}
     }, 200);
 
     if (vscode.window.onDidChangeVisibleTextEditors) {
