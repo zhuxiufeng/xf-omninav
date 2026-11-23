@@ -175,13 +175,20 @@ def main():
 
     log(f"Installing {vsix_path.name} to target IDEs...", "INFO")
 
-    # Target directories to install (both WSL remote server and Windows client roots)
+    # Target directories to install (Native Ubuntu desktop, remote server, and WSL/Windows)
     home = Path.home()
     target_dirs = [
+        # Native Linux desktop IDE extension roots
+        home / ".antigravity-ide" / "extensions",
+        home / ".antigravity" / "extensions",
+        home / ".vscode" / "extensions",
+        home / ".cursor" / "extensions",
+        # Server/remote extensions directories
         home / ".antigravity-ide-server" / "extensions",
         home / ".antigravity-server" / "extensions",
         home / ".vscode-server" / "extensions",
         home / ".cursor-server" / "extensions",
+        # Windows client roots (if dual/WSL env)
         Path("/mnt/c/Users/sageb/.antigravity-ide/extensions"),
         Path("/mnt/c/Users/sageb/.vscode/extensions"),
         Path("/mnt/c/Users/sageb/.cursor/extensions"),
@@ -193,31 +200,31 @@ def main():
             if install_vsix_to_dir(vsix_path, t_dir, ext_id, version):
                 installed_count += 1
 
-    # Hot-deploy directly into running Antigravity IDE instance via IPC socket
-    import glob
-    ipc_socks = sorted(glob.glob("/run/user/1000/vscode-ipc-*.sock"), key=os.path.getmtime, reverse=True)
-    antigravity_bin = "/home/zxf/.local/bin/antigravity-ide"
-    if ipc_socks and os.path.exists(antigravity_bin):
-        latest_sock = ipc_socks[0]
-        env = os.environ.copy()
-        env["VSCODE_IPC_HOOK_CLI"] = latest_sock
+    # Hot-deploy directly into running Antigravity IDE instance via CLI / IPC
+    antigravity_bin = (
+        shutil.which("antigravity-ide")
+        or (Path("/snap/bin/antigravity-ide-snap.antigravity-ide") if Path("/snap/bin/antigravity-ide-snap.antigravity-ide").exists() else None)
+        or (home / ".local/bin/antigravity-ide" if (home / ".local/bin/antigravity-ide").exists() else None)
+    )
+    if antigravity_bin:
         try:
             res = subprocess.run(
-                [antigravity_bin, "--install-extension", str(vsix_path), "--force"],
-                env=env,
+                [str(antigravity_bin), "--install-extension", str(vsix_path), "--force"],
                 capture_output=True,
                 text=True,
-                timeout=15,
+                timeout=20,
             )
             if res.returncode == 0:
-                log(f"Hot-deployed directly into running Antigravity IDE window via IPC socket ({Path(latest_sock).name})", "DONE")
+                log(f"Hot-deployed directly into running Antigravity IDE window via '{antigravity_bin} --install-extension'", "DONE")
+            else:
+                log(f"Antigravity IDE CLI returned {res.returncode}: {res.stderr or res.stdout}", "WARN")
         except Exception as e:
             log(f"Antigravity IDE hot-deploy notice: {e}", "WARN")
 
     # Optional: invoke code CLI if available
     code_bins = [
-        "/mnt/c/Users/sageb/AppData/Local/Programs/Microsoft VS Code/bin/code",
         "code",
+        "/mnt/c/Users/sageb/AppData/Local/Programs/Microsoft VS Code/bin/code",
     ]
     for bin_path in code_bins:
         code_path = shutil.which(bin_path)
