@@ -2,7 +2,7 @@
   "name": "xf-omninav",
   "displayName": "XF OmniNav",
   "description": "PyCharm-grade universal IDE enhancement & navigation suite: precision symbol & inheritance navigation, heuristic call argument inspection, independent branch folding, file error badges, and status bar monitor.",
-  "version": "1.0.66",
+  "version": "1.0.67",
   "publisher": "Vivian",
   "icon": "resources/icon.png",
   "repository": {
@@ -151,12 +151,12 @@
       },
       {
         "command": "xfOmniNav.nextCallArgumentError",
-        "title": "XF OmniNav: Jump to Next Parameter / Type Error (F2)",
+        "title": "XF OmniNav: Jump to Next Parameter / Type Error",
         "category": "XF OmniNav"
       },
       {
         "command": "xfOmniNav.prevCallArgumentError",
-        "title": "XF OmniNav: Jump to Previous Parameter / Type Error (Shift+F2)",
+        "title": "XF OmniNav: Jump to Previous Parameter / Type Error",
         "category": "XF OmniNav"
       },
       {
@@ -166,12 +166,12 @@
       },
       {
         "command": "xfOmniNav.showFileStructure",
-        "title": "XF OmniNav: Show File Structure Outline (Ctrl+F12)",
+        "title": "XF OmniNav: Show File Structure Outline",
         "category": "XF OmniNav"
       },
       {
         "command": "xfOmniNav.showCallHierarchy",
-        "title": "XF OmniNav: Show Call Hierarchy (Ctrl+Alt+H)",
+        "title": "XF OmniNav: Show Call Hierarchy",
         "category": "XF OmniNav"
       },
       {
@@ -208,60 +208,6 @@
         }
       ]
     },
-    "keybindings": [
-      {
-        "command": "xfOmniNav.navigate",
-        "key": "ctrl+alt+b",
-        "mac": "cmd+alt+b",
-        "when": "editorTextFocus"
-      },
-      {
-        "command": "xfOmniNav.navigate",
-        "key": "alt+d",
-        "mac": "alt+d",
-        "when": "editorTextFocus"
-      },
-      {
-        "command": "xfOmniNav.jumpToParent",
-        "key": "ctrl+u",
-        "mac": "cmd+u",
-        "when": "editorTextFocus"
-      },
-      {
-        "command": "xfOmniNav.navigateBack",
-        "key": "alt+left",
-        "mac": "cmd+[",
-        "when": "editorTextFocus"
-      },
-      {
-        "command": "xfOmniNav.nextCallArgumentError",
-        "key": "f2",
-        "when": "editorTextFocus"
-      },
-      {
-        "command": "xfOmniNav.prevCallArgumentError",
-        "key": "shift+f2",
-        "when": "editorTextFocus"
-      },
-      {
-        "command": "xfOmniNav.showRecentLocations",
-        "key": "ctrl+e",
-        "mac": "cmd+e",
-        "when": "editorTextFocus"
-      },
-      {
-        "command": "xfOmniNav.showFileStructure",
-        "key": "ctrl+f12",
-        "mac": "cmd+f12",
-        "when": "editorTextFocus"
-      },
-      {
-        "command": "xfOmniNav.showCallHierarchy",
-        "key": "ctrl+alt+h",
-        "mac": "cmd+alt+h",
-        "when": "editorTextFocus"
-      }
-    ],
     "configuration": {
       "type": "object",
       "title": "XF OmniNav",

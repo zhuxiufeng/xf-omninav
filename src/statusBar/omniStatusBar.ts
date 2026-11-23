@@ -89,35 +89,35 @@ export class OmniStatusBar implements vscode.Disposable {
   public async showMenu(): Promise<void> {
     const items: (vscode.QuickPickItem & { action: () => Promise<void> | void })[] = [
       {
-        label: '$(arrow-down) Jump to Next Parameter Error (F2)',
+        label: '$(arrow-down) Jump to Next Parameter Error',
         description: 'Navigate to next call argument or type mismatch in active file',
         action: async () => {
           await vscode.commands.executeCommand('xfOmniNav.nextCallArgumentError');
         },
       },
       {
-        label: '$(arrow-up) Jump to Previous Parameter Error (Shift+F2)',
+        label: '$(arrow-up) Jump to Previous Parameter Error',
         description: 'Navigate to previous call argument or type mismatch in active file',
         action: async () => {
           await vscode.commands.executeCommand('xfOmniNav.prevCallArgumentError');
         },
       },
       {
-        label: '$(history) Show Recent Locations (Ctrl+E)',
+        label: '$(history) Show Recent Locations',
         description: 'View and jump back to recently visited code positions (PyCharm Style)',
         action: async () => {
           await vscode.commands.executeCommand('xfOmniNav.showRecentLocations');
         },
       },
       {
-        label: '$(symbol-structure) Show File Structure Outline (Ctrl+F12)',
+        label: '$(symbol-structure) Show File Structure Outline',
         description: 'Floating outline of classes and methods with inherited toggle (PyCharm Style)',
         action: async () => {
           await vscode.commands.executeCommand('xfOmniNav.showFileStructure');
         },
       },
       {
-        label: '$(call-incoming) Show Call Hierarchy (Ctrl+Alt+H)',
+        label: '$(call-incoming) Show Call Hierarchy',
         description: 'Inspect who calls this function (Callers) and who it calls (Callees)',
         action: async () => {
           await vscode.commands.executeCommand('xfOmniNav.showCallHierarchy');

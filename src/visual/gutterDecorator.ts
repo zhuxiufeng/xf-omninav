@@ -310,7 +310,7 @@ export class InheritanceDecorator implements vscode.Disposable {
       }
     }
 
-    md.appendMarkdown(`\n---\n*💡 Click any link above or press \`Ctrl+U\` / \`Ctrl+Alt+B\` to jump.*`);
+    md.appendMarkdown(`\n---\n*💡 Click any link above to jump.*`);
     (marker as any)._cachedHover = md;
     return md;
   }

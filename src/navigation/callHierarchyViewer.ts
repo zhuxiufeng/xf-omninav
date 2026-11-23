@@ -118,7 +118,7 @@ export class CallHierarchyViewer {
         }
 
         const picked = await vscode.window.showQuickPick(items, {
-          placeHolder: `调用关系树: ${symbolName} (PyCharm Ctrl+Alt+H 风格，回车直接跳转)`,
+          placeHolder: `调用关系树: ${symbolName} (PyCharm 风格调用层级，回车直接跳转)`,
           matchOnDescription: true,
           matchOnDetail: true,
         });
