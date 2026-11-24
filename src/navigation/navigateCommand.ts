@@ -23,8 +23,8 @@ export class NavigateCommand {
     const document = editor.document;
     const position = editor.selection.active;
 
-    // Ensure any dirty edits in current document or workspace are synced just before jump
-    this.indexer.ensureSynchronized();
+    // Ensure any dirty edits in current document are synced just before jump
+    this.indexer.ensureSynchronized(document.uri);
 
     // 1. Save history before jump
     globalHistory.pushCurrentLocation(editor);
@@ -143,7 +143,7 @@ export class NavigateCommand {
       }
     }
 
-    // 3. Try native LSP definition provider first (with 80ms timeout for instant responsiveness)
+    // 3. Try native LSP definition provider first (with 25ms timeout for instant responsiveness)
     try {
       let timer: NodeJS.Timeout | undefined;
       const lspPromise = Promise.resolve(
@@ -155,7 +155,7 @@ export class NavigateCommand {
       ).catch(() => null);
 
       const timeoutPromise = new Promise<null>((resolve) => {
-        timer = setTimeout(() => resolve(null), 80);
+        timer = setTimeout(() => resolve(null), 25);
       });
 
       const lspLocations = await Promise.race([lspPromise, timeoutPromise]);

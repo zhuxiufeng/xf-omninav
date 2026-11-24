@@ -7,6 +7,7 @@ import { SymbolParser } from '../indexer/symbolParser';
 export class VenvResolver {
   private static cachedSitePackages: string[] = [];
   private static isScanningVenv = false;
+  private static resolvedCache = new Map<string, SymbolDefinition[]>();
 
   /**
    * Find candidate site-packages directories in current workspace or python configuration.
@@ -62,8 +63,18 @@ export class VenvResolver {
     moduleName: string,
     symbolName?: string
   ): Promise<SymbolDefinition[]> {
+    if (!moduleName || moduleName.trim().length === 0) {
+      return [];
+    }
+
+    const cacheKey = `${moduleName}:${symbolName || ''}`;
+    if (this.resolvedCache.has(cacheKey)) {
+      return this.resolvedCache.get(cacheKey)!;
+    }
+
     const sitePackages = await this.getSitePackagesPaths();
     if (sitePackages.length === 0) {
+      this.resolvedCache.set(cacheKey, []);
       return [];
     }
 
@@ -132,6 +143,10 @@ export class VenvResolver {
       }
     }
 
+    if (this.resolvedCache.size > 500) {
+      this.resolvedCache.clear();
+    }
+    this.resolvedCache.set(cacheKey, results);
     return results;
   }
 }

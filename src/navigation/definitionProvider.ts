@@ -10,6 +10,18 @@ import { ContextResolver, ReceiverInfo } from '../resolver/contextResolver';
 import { SymbolDefinition } from '../types';
 import { getOmniConfig, getRipgrepPath } from '../utils';
 
+const PYTHON_BUILTINS = new Set([
+  'print', 'len', 'range', 'int', 'str', 'float', 'bool', 'list', 'dict', 'set', 'tuple',
+  'isinstance', 'issubclass', 'getattr', 'setattr', 'hasattr', 'delattr',
+  'open', 'super', 'self', 'cls', 'None', 'True', 'False', 'object', 'type',
+  'id', 'dir', 'vars', 'zip', 'map', 'filter', 'any', 'all', 'min', 'max',
+  'sum', 'round', 'abs', 'repr', 'iter', 'next', 'enumerate', 'hash', 'format',
+  'bytearray', 'bytes', 'callable', 'chr', 'ord', 'complex', 'divmod', 'pow',
+  'slice', 'staticmethod', 'classmethod', 'property', 'Exception', 'ValueError',
+  'TypeError', 'KeyError', 'IndexError', 'AttributeError', 'RuntimeError',
+  'StopIteration', 'NotImplementedError', 'IOError', 'OSError'
+]);
+
 export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
   private static isQueryingLsp = false;
 
@@ -29,8 +41,8 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
       return null;
     }
 
-    // Ensure any dirty edits in current document or workspace are synced just before jump
-    this.indexer.ensureSynchronized();
+    // Ensure any dirty edits in current document are synced just before jump
+    this.indexer.ensureSynchronized(document.uri);
 
     // 1. Resolve imports and file path strings first
     const supportImports = getOmniConfig<boolean>('supportFileImports', true);
@@ -73,9 +85,6 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
       return null;
     }
 
-    // Query native LSP definitions in background (with re-entrancy guard)
-    const lspTargets = await this.queryLspDefinitions(document, position);
-
     // 3. Resolve receiver & container context (subclass override resolution)
     const receiver = ContextResolver.inferReceiverFromPrefix(document, position, wordRange);
     const containerHint = receiver.containerName;
@@ -86,14 +95,14 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
     if (!receiver.isSelf && !receiver.isCls && !receiver.isSuper && !receiver.varName) {
       const localScope = ContextResolver.resolveLocalScope(document, position, symbolName);
       if (localScope) {
-        if (this.isCoveredByLsp(localScope, lspTargets)) {
-          return null;
-        }
         return [
           await this.toCalibratedLocationLink(wordRange, localScope.uri, localScope.range, localScope.selectionRange, symbolName)
         ];
       }
     }
+
+    // Query native LSP definitions in background (with re-entrancy guard and 25ms timeout)
+    const lspTargets = await this.queryLspDefinitions(document, position);
 
     // 3.1 Subclass / Self-invocation Direct Precision Jump:
     // If calling via self. / this. in a subclass and current subclass implements the method:
@@ -237,7 +246,8 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
 
     // 6. If no workspace match, check virtual environment (site-packages)
     const indexVenv = getOmniConfig<boolean>('indexVirtualEnv', true);
-    if (matchedDefs.length === 0 && indexVenv) {
+    const isPythonBuiltin = document.languageId === 'python' && PYTHON_BUILTINS.has(symbolName) && !containerHint;
+    if (matchedDefs.length === 0 && indexVenv && !isPythonBuiltin) {
       if (containerHint) {
         // e.g. requests.get -> containerHint = requests, symbolName = get
         matchedDefs = await VenvResolver.resolveVenvSymbol(containerHint, symbolName);
@@ -310,7 +320,7 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
       ).catch(() => undefined);
 
       const timeoutPromise = new Promise<undefined>((resolve) => {
-        timer = setTimeout(() => resolve(undefined), 80);
+        timer = setTimeout(() => resolve(undefined), 25);
       });
 
       const raw = await Promise.race([lspPromise, timeoutPromise]);
@@ -532,6 +542,12 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
   ): Promise<SymbolDefinition[]> {
     if (currentDocUri.scheme !== 'file') return [];
 
+    // If workspace is already indexed, all workspace symbols are in memory.
+    // Avoid heavy disk & ripgrep scanning on unindexed symbols or builtins.
+    if (this.indexer.totalSymbols > 0 && !receiver?.varName) {
+      return [];
+    }
+
     // 1. Sibling file discovery: check files in the same directory first
     try {
       const currentDir = path.dirname(currentDocUri.fsPath);
@@ -539,27 +555,29 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
         const files = await fs.promises.readdir(currentDir);
         const candidates: string[] = [];
         const varName = receiver?.varName?.toLowerCase();
+        const symLower = symbolName.toLowerCase();
         for (const file of files) {
+          const lower = file.toLowerCase();
           if (
-            !file.endsWith('.py') &&
-            !file.endsWith('.ts') &&
-            !file.endsWith('.js') &&
-            !file.endsWith('.c') &&
-            !file.endsWith('.cpp')
+            !lower.endsWith('.py') &&
+            !lower.endsWith('.ts') &&
+            !lower.endsWith('.js') &&
+            !lower.endsWith('.c') &&
+            !lower.endsWith('.cpp')
           ) {
             continue;
           }
           const fullPath = path.join(currentDir, file);
           if (fullPath === currentDocUri.fsPath) continue;
 
-          if (varName && file.toLowerCase().includes(varName)) {
+          if (varName && lower.includes(varName)) {
             candidates.unshift(fullPath);
-          } else {
+          } else if (lower.includes(symLower)) {
             candidates.push(fullPath);
           }
         }
 
-        const checkLimit = Math.min(candidates.length, 10);
+        const checkLimit = Math.min(candidates.length, 2);
         for (let i = 0; i < checkLimit; i++) {
           const filePath = candidates[i];
           const uriStr = vscode.Uri.file(filePath).toString();
@@ -577,48 +595,50 @@ export class SmoothDefinitionProvider implements vscode.DefinitionProvider {
       }
     } catch {}
 
-    // 2. Ripgrep workspace discovery
-    const rgPath = getRipgrepPath();
-    if (rgPath) {
-      try {
-        const workspaceFolder = vscode.workspace.getWorkspaceFolder(currentDocUri);
-        const rootPath = workspaceFolder
-          ? workspaceFolder.uri.fsPath
-          : path.dirname(currentDocUri.fsPath);
-        const escaped = symbolName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const pattern = `^\\s*(?:async\\s+)?def\\s+${escaped}\\b|^\\s*class\\s+${escaped}\\b`;
+    // 2. Ripgrep workspace discovery (only if workspace has not finished indexing yet)
+    if (this.indexer.totalSymbols === 0) {
+      const rgPath = getRipgrepPath();
+      if (rgPath) {
+        try {
+          const workspaceFolder = vscode.workspace.getWorkspaceFolder(currentDocUri);
+          const rootPath = workspaceFolder
+            ? workspaceFolder.uri.fsPath
+            : path.dirname(currentDocUri.fsPath);
+          const escaped = symbolName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const pattern = `^\\s*(?:async\\s+)?def\\s+${escaped}\\b|^\\s*class\\s+${escaped}\\b`;
 
-        const stdout = await new Promise<string>((resolve) => {
-          cp.execFile(
-            rgPath,
-            ['-l', '--max-count', '1', pattern, rootPath],
-            { timeout: 800, maxBuffer: 1024 * 512 },
-            (err, out) => {
-              if (err || !out) resolve('');
-              else resolve(out);
-            }
-          );
-        });
-
-        if (stdout) {
-          const lines = stdout
-            .split(/\r?\n/)
-            .map((l) => l.trim())
-            .filter(Boolean);
-          for (const matchedPath of lines.slice(0, 5)) {
-            const uriStr = vscode.Uri.file(matchedPath).toString();
-            if (this.indexer.hasFile(uriStr)) continue;
-            try {
-              const content = await fs.promises.readFile(matchedPath, 'utf8');
-              this.indexer.indexFile(vscode.Uri.file(matchedPath), content);
-              const found = this.indexer.findExact(symbolName);
-              if (found.length > 0) {
-                return found;
+          const stdout = await new Promise<string>((resolve) => {
+            cp.execFile(
+              rgPath,
+              ['-l', '--max-count', '1', pattern, rootPath],
+              { timeout: 100, maxBuffer: 1024 * 512 },
+              (err, out) => {
+                if (err || !out) resolve('');
+                else resolve(out);
               }
-            } catch {}
+            );
+          });
+
+          if (stdout) {
+            const lines = stdout
+              .split(/\r?\n/)
+              .map((l) => l.trim())
+              .filter(Boolean);
+            for (const matchedPath of lines.slice(0, 3)) {
+              const uriStr = vscode.Uri.file(matchedPath).toString();
+              if (this.indexer.hasFile(uriStr)) continue;
+              try {
+                const content = await fs.promises.readFile(matchedPath, 'utf8');
+                this.indexer.indexFile(vscode.Uri.file(matchedPath), content);
+                const found = this.indexer.findExact(symbolName);
+                if (found.length > 0) {
+                  return found;
+                }
+              } catch {}
+            }
           }
-        }
-      } catch {}
+        } catch {}
+      }
     }
 
     return [];
@@ -721,7 +741,7 @@ export class SmoothImplementationProvider implements vscode.ImplementationProvid
 
     const symbolName = document.getText(wordRange);
 
-    // 1. Try LSP Implementation Provider first (with 100ms timeout)
+    // 1. Try LSP Implementation Provider first (with 25ms timeout)
     try {
       let timer: NodeJS.Timeout | undefined;
       const lspPromise = Promise.resolve(
@@ -733,7 +753,7 @@ export class SmoothImplementationProvider implements vscode.ImplementationProvid
       ).catch(() => undefined);
 
       const timeoutPromise = new Promise<undefined>((resolve) => {
-        timer = setTimeout(() => resolve(undefined), 100);
+        timer = setTimeout(() => resolve(undefined), 25);
       });
 
       const lspImpls = await Promise.race([lspPromise, timeoutPromise]);

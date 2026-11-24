@@ -1429,6 +1429,45 @@ class BoxAction:
 
     indexer.dispose();
   });
+
+  it('should resolve local variable and bypass LSP/disk scans for Python builtins', async () => {
+    const code = `
+def process_data(items):
+    total_count = len(items)
+    return total_count
+`;
+    const doc = new MockTextDocument(code, 'file:///app/sample.py', 'python');
+    const indexer = new SymbolIndexer();
+    indexer.indexDocument(doc as any);
+
+    const provider = new SmoothDefinitionProvider(indexer);
+
+    const { commands } = await import('./vscode-mock');
+    let lspCalled = false;
+    const origExecute = commands.executeCommand;
+    commands.executeCommand = async (cmd: string) => {
+      if (cmd === 'vscode.executeDefinitionProvider') {
+        lspCalled = true;
+      }
+      return undefined;
+    };
+
+    try {
+      // 1. Cursor on local variable total_count (line 3, col 12)
+      const pos = new Position(3, 12);
+      const res = await provider.provideDefinition(doc as any, pos as any, {} as any) as any[];
+      assert.ok(res && res.length === 1, 'Must resolve local variable directly');
+      assert.strictEqual(res[0].targetRange.start.line, 2, 'Must point to assignment at line 2');
+      assert.strictEqual(lspCalled, false, 'Local scope resolution must NEVER call slow LSP');
+
+      // 2. Cursor on Python builtin len (line 2, col 19)
+      const posLen = new Position(2, 19);
+      const resLen = await provider.provideDefinition(doc as any, posLen as any, {} as any);
+      assert.strictEqual(resLen, null, 'Builtins must immediately return null without disk scanning');
+    } finally {
+      commands.executeCommand = origExecute;
+    }
+  });
 });
 
 
